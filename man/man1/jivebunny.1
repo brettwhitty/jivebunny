@@ -1,0 +1,177 @@
+.\" Process this file with
+.\" groff -man -Tascii bam-rmdup.1
+.\"
+.TH JIVEBUNNY 1 "JULY 2015" Applications "User Manuals"
+.SH NAME
+jivebunny \- demultiplex Illumina sequences
+.SH SYNOPSIS
+.B jivebunny [
+.I option
+.B |
+.I file
+.B ... ]
+.SH DESCRIPTION
+.B jivebunny
+demultiplexes double-index Illumina sequencing data from one or more BAM
+files.  In a first pass, the present mixture is analyzed, which serves
+to estimate possibly uneven mixture ratios and to assess unexpected
+contaminants.  In a second pass, each read is assigned to the most
+probable read group given the estimated mixture ratios.  For both
+passes, all input files are concatenated.  Summary statistics and
+quality scores are computed globally and per read as appropriate.
+
+.SH OPTIONS
+.IP "-o, --output file"
+Send BAM output to
+.IR file .
+The default is to produce no output and estimate mixture ratios only.  If 
+.I file
+is '-', BAM output is sent to
+.I stdout
+and the final tally is instead sent
+to
+.IR stderr .
+
+.IP "-I, --index-database file"
+Read the database of possible indices from
+.IR file .
+Every combination of a P7 index and a P5 index from this file is
+considered a possible component of the mix.  The default is a file
+containing all Illumina Truseq indices and indices from the
+Meyer/Kircher paper.  See below for the format of this file.
+
+.IP "-r, --read-groups file"
+Read read group definitions from file, see below for the format of this
+file.  Read group definitions are not necessary to identify a mixture
+component, but only known components can be named and assigned.
+
+.IP "--threshold frac"
+Set the threshold for the estimation of mixture components to 
+.IR frac .
+The iteration stops as soon as no estimate for any component changes by
+more than
+.IR frac .
+The default of 1/200000 seems to work well in practice.
+
+.IP "--sample num"
+Sample
+.I num
+reads for the mixture estimation.  The default is 50000, which is
+usually good enough.  By sampling more, the ability to detect
+contaminants at low concentration can be improved at the cost of longer
+computation.
+
+.IP "--components num"
+Print the top
+.I num
+components of the mixture after estimation.  By default, 25% more than
+the number of defined read groups, but at least 20 are printed.  Setting
+this to a higher number may be a good idea if you're trying to reverse
+engineer a pipetting accident.
+
+.IP "-s, --single-index"
+Pretend there is only one index.  This switch doesn't change the
+program's logic (it still pretends everything is doubly indexed), but it
+helps to make the output more readable if only one index was really
+sequenced.
+
+.IP "--pedantic"
+Be pedantic about read groups.  Normally, 
+.I jivebunny
+will assign reads to undeclared read groups by placing the names of the
+two most likely indices into the 
+.I RG
+field.  However, since it is not feasible to provide a header that
+declares all these potential read groups, the BAM file will technically
+be invalid.  
+.I samtools
+will still happily filter on this field, though.  If the
+.I --pedantic
+switch is set, these reads are not assigned to any read group.
+
+
+.IP "--verbose"
+Print progress reports during computation.  The estimation process can
+be observed and a counter runs while reading or writing BAM files.
+
+.IP "--quiet"
+Don't print anything, not even the summary statistics.
+
+.IP "-h, -?, --help, --usage"
+Prints a short usage message and exits the program.
+
+.IP "-V, --version"
+Prints the version of biohazard used and exits the program.
+
+.SH FILES
+
+.SS Input Files
+
+All input files must be double index BAM files.  Indices are stored in
+tagged fields where
+.IR XI " and " XJ
+contain the first and second ASCII codes index sequence (only A,C,G,T
+and N are allowed) and 
+.IR YI " and " YJ
+contain the quality scores encoded as a string just like in FastaQ
+(ASCII codepoint of value plus 33).  Single indexed BAM files should
+work in principle, but the output may be hard to interpret.
+
+.SS Output File
+
+The ouput is a single BAM file which is equivalent to the concatenated
+inputs with the following modifications:  The header contains an
+additional 
+.I @PG
+line and one
+.I @RG
+line for each read group.  Each read gains the appropriate 
+.I @RG
+field if a known read group can be assigned; otherwise the 
+.I @RG 
+field is deleted.  The fields 
+.IR @Z0 " and " @Z2
+are deleted and the field
+.I @Z1
+is added with a Phred scaled quality score for the assigned read group.
+(In other words, 
+.I @Z1 
+is the probability that some other assignment is actually correct,
+expressed in deciban.  If no read group could be assigned, this value
+may not be of much value.)
+
+.SS Read Group File
+
+The read group file is TAB separated table containg an optional header
+line starting with a hash mark ('#') and then one line per read group.
+The first field is the name of the read group, the second field is the
+name (not the sequence) of the first index, the third is the name of the
+second index.  Further fields must have the form
+.I XY:val
+and are copied into the
+.I @RG
+header of the output.  This facility can be used to assign libraries or
+samples to read groups for easier downstream processing.
+
+.SS Index Database
+
+The index database is a JSON file containing a single object with two
+fields named ``p7index'' and ``p5index''.  Each of these is an object
+mapping index names to index sequences, the latter encoded as a string.
+
+It is permissible for multiple indices to have the same sequence.  These
+will be treated as aliases when parsing read group files, only the first
+name is used when producing output.
+
+
+.SH AUTHOR
+Udo Stenzel <udo_stenzel@eva.mpg.de>
+
+.SH "SEE ALSO"
+.BR biohazard (7), bam (5), fastq (5), json (5)
+
+Kircher 
+.I et.al 
+(2012). Double indexing overcomes inaccuracies in multiplex sequencing on the Illumina platform. 
+.IR "Nucleic Acids Research, 40" (1), 
+e3. doi:10.1093/nar/gkr771

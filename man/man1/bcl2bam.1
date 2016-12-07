@@ -1,0 +1,174 @@
+.\" Process this file with
+.\" groff -man -Tascii bam-rmdup.1
+.\"
+.TH BCL2BAM 1 "OCTOBER 2016" Applications "User Manuals"
+.SH NAME
+bcl2bam \- convert bcl files to bam
+.SH SYNOPSIS
+.B bcl2bam [
+.I option
+.B ... ] [
+.I run-folder
+.B ... ]
+
+.SH DESCRIPTION
+.B bcl2bam
+takes a file system hierarchy of bcl files together with a folder of
+location files and converts them to bam.  Paired end and singly or
+doubly indexed reads are supported.
+
+If run folders are specified, all lanes in all these folders are
+converted.  Information how to split cycles into reads or index reads is
+obtained from the
+.I RunInfo.xml
+file for each, the folders for bcl and locs files are assumed to be in
+their customary location.  These settings can be overridden from the command line,
+and processing can be restricted to a subset of lanes and/or tiles.
+
+If no run folder is given, the paths to bcl files and locs files must be
+specified together with exactly one lane number.  Only the cycles for
+the first read can be inferred, the others will have to be specified.
+This mode is most useful if the layout of a run folder is
+non-standard.
+
+.SH OPTIONS
+
+.IP "-o, --output file"
+Send output to
+.I file
+instead of standard output.  Absent
+.IR -o ,
+uncompressed BAM is piped to stdout.
+
+.IP "-l, --lanes list"
+Restrict processing to the lanes mentioned in 
+.IR list .
+The default is to process all lanes if run folders are specified.  If no
+run-folder is specified, 
+.I list
+must contain exactly one lane number, which defaults to 
+.IR 1 .
+
+.IP "-t, --tiles list"
+Restrict processing to tiles in 
+.IR list .
+The default is to process all tiles for which a 
+.I locs
+file can be found.
+
+.IP "-e, --experiment-name name"
+Override the experiment name to
+.IR name , 
+which will appear in the qnames of the generated
+.I bam 
+file.  The experiment name is normally inferred from the base name of
+the run-folder, it is empty if no run-folder is specified.
+
+.IP "-b, --bcl-path path"
+Set the path to
+.I bcl
+files to
+.IR path .
+This folder must contain subfolders for each cycle and one 
+.I filter
+file for each tile.  Normally it has a fixed position relative to the
+run-folder.
+
+.IP "-p, --pos-path path, --locs-path path"
+Set the path to
+.I locs
+files to
+.IR path .
+This folder must contain one 
+.IR locs " or " clocs
+file for each tile.  Normally it has a fixed position relative to the
+run-folder.
+
+.IP "-r, --read1 range"
+Specifies that read one (the read in a single-ending setting or the
+first mate in a paired-end setting) encompasses
+.IR range .
+By default, if a run-folder is given, it is inferred from the
+.I RunInfo.xml
+file.  Without a run-folder, it is inferred to encompass all cycles or
+all cycles from the first to the beginning of any other read.
+
+.IP "-R, --read2 range"
+Specifies that read two (the second mate in a paired-end setting)
+encompasses
+.IR range .
+By default, if a run-folder is given, it is inferred from the
+.I RunInfo.xml
+file.  Without a run-folder, read two is inferred to be absent.
+
+.IP "-i, --index1 range"
+Specifies that index read one encompasses
+.IR range .
+By default, if a run-folder is given, it is inferred from the
+.I RunInfo.xml
+file.  Without a run-folder, index one is inferred to be absent.
+
+.IP "-I, --index2 range"
+Specifies that index read two encompasses
+.IR range .
+By default, if a run-folder is given, it is usually inferred from the
+.I RunInfo.xml
+file.  Old 
+.I RunInfo.xml
+files may be missing this information, so it is possible that it has to
+be overridden manually.  Without a run-folder, index two is inferred to
+be absent.
+
+.IP "-v, --verbose"
+Causes
+.I bcl2bam
+to print a progress report to stderr.
+
+.IP "-V, --version"
+Prints the program's version number and exits.
+
+.IP "-h, -?, --help, --usage"
+Prints brief usage information and exits.
+
+
+.SH NOTES
+
+.SS Command Line Parsing
+
+Where the command line takes a list as an argument, the elements shall
+be separated by a comma.  If an element looks like a pair of numbers
+separated by a dash, it is interpreted as a range and expanded.
+
+Where the command line takes a range as an argument, the range shall be
+specified as two numbers separated by a comma or a dash.  A single
+number is also allowed, and specifies the range containing only that
+number.
+
+
+.SS Input Files
+
+All supported input files 
+.RI ( locs ", " clocs ", " filter ", " bcl )
+can optionally be compressed using either
+.IR gzip " or " bgzip .
+Decompression is completely transparent.
+
+
+.SS Output Files
+
+Output is BAM.  Most information is encoded in the standard fields and
+flags.  In addition, the first index sequence is placed into the 
+.I XI
+field with string type, its quality score into the 
+.I YI
+field with string type, encoded just like in FastQ files.
+Likewise, the second index goes into
+.IR XJ " and " YJ .
+
+
+.SH AUTHOR
+Udo Stenzel <udo_stenzel@eva.mpg.de>
+
+.SH "SEE ALSO"
+.BR biohazard (7)
+
