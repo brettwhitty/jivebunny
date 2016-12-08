@@ -2,33 +2,34 @@
 -- Iteratee.
 
 module Bgzf (
-    Block(..), decompressBgzfBlocks', decompressBgzfBlocks,
-    decompressBgzf, decompressPlain,
-    maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
-    BgzfChunk(..), isBgzf, isGzip, parMapChunksIO,
-    compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..),
+    -- Block(..), decompressBgzfBlocks', decompressBgzfBlocks,
+    -- decompressBgzf, decompressPlain,
+    maxBlockSize, bgzfEofMarker, -- liftBlock, getOffset,
+    -- BgzfChunk(..), isBgzf, isGzip, parMapChunksIO,
+    -- compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..),
     compressChunk
                      ) where
 
-import Bio.Iteratee
-import Bio.Prelude
+-- import Bio.Iteratee
+import BasePrelude
 import Control.Concurrent.Async             ( async, wait )
 import Foreign.Marshal.Alloc                ( mallocBytes, free, allocaBytes )
 import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 import Foreign.C.String                     ( withCAString )
 import Foreign.C.Types                      ( CInt(..), CChar(..), CUInt(..), CULong(..) )
+import Foreign.ForeignPtr
 import Foreign.Ptr                          ( nullPtr, castPtr, Ptr, plusPtr, minusPtr )
 
-import qualified Data.ByteString            as S
-import qualified Data.ByteString.Unsafe     as S
-import qualified Data.Iteratee.ListLike     as I
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Unsafe     as B
+-- import qualified Data.Iteratee.ListLike     as I
 
 #include <zlib.h>
 
 -- | One BGZF block: virtual offset and contents.  Could also be a block
 -- of an uncompressed file, if we want to support indexing of
 -- uncompressed BAM or some silliness like that.
-data Block = Block { block_offset   :: {-# UNPACK #-} !FileOffset
+{- data Block = Block { block_offset   :: {-# UNPACK #-} !FileOffset
                    , block_contents :: {-# UNPACK #-} !Bytes }
 
 instance NullPoint Block where empty = mempty
@@ -154,7 +155,7 @@ isGzip = liftM (either (const False) id) $ checkErr $ iLookAhead $ test
     test = do n <- I.heads "\31\139"
               I.drop 24
               b <- I.isFinished
-              return $ not b && n == 2
+              return $ not b && n == 2 -}
 
 -- ------------------------------------------------------------------------- Output
 
@@ -167,7 +168,7 @@ maxBlockSize = 65450
 -- | The EOF marker for BGZF files.
 -- This is just an empty string compressed as BGZF.  Appended to BAM
 -- files to indicate their end.
-bgzfEofMarker :: Bytes
+bgzfEofMarker :: B.ByteString
 bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0\0\0\0\0\0"
 
 -- | Decompress a collection of strings into a single BGZF block.
@@ -187,7 +188,7 @@ bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0
 -- anyway.  Hence, run in IO.
 
 
-decompress1 :: FileOffset -> [Bytes] -> Word32 -> Int -> IO Block
+{- decompress1 :: FileOffset -> [Bytes] -> Word32 -> Int -> IO Block
 decompress1 off ss crc usize =
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
     buf <- mallocBytes usize
@@ -222,7 +223,7 @@ decompress1 off ss crc usize =
     when (fromIntegral crc /= crc') $ error "CRC error after deflate()"
 
     Block off `liftM` S.unsafePackCStringFinalizer (castPtr buf) usize (free buf)
-
+-}
 
 -- | Compress a collection of strings into a single BGZF block.
 --
@@ -237,7 +238,7 @@ decompress1 off ss crc usize =
 -- here, but then again, we only do this when we're writing output
 -- anyway.  Hence, run in IO.
 
-compress1 :: Int -> [Bytes] -> IO Bytes
+{- compress1 :: Int -> [Bytes] -> IO Bytes
 compress1 _lv [] = return bgzfEofMarker
 compress1 lv ss0 =
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
@@ -291,7 +292,7 @@ compress1 lv ss0 =
     pokeByteOff buf (compressed_length-4) (fromIntegral input_length :: Word32)
 
     S.unsafePackCStringFinalizer buf compressed_length (free buf)
-
+-}
 
 data ZStream
 
@@ -337,15 +338,15 @@ foreign import ccall unsafe "zlib.h crc32" c_crc32 ::
 -- stream contains the offset of the current block in the upper 48 bits
 -- and the current offset into that block in the lower 16 bits.  This
 -- scheme is compatible with the way BAM files are indexed.
-getOffset :: Iteratee Block m FileOffset
+{- getOffset :: Iteratee Block m FileOffset
 getOffset = liftI step
   where
     step s@(EOF _) = icont step (Just (setEOF s))
-    step s@(Chunk (Block o _)) = idone o s
+    step s@(Chunk (Block o _)) = idone o s -}
 
 -- | Runs an @Iteratee@ for @Bytes@s when decompressing BGZF.  Adds
 -- internal bookkeeping.
-liftBlock :: Monad m => Iteratee Bytes m a -> Iteratee Block m a
+{- liftBlock :: Monad m => Iteratee Bytes m a -> Iteratee Block m a
 liftBlock = liftI . step
   where
     step it (EOF ex) = joinI $ lift $ enumChunk (EOF ex) it
@@ -355,7 +356,7 @@ liftBlock = liftI . step
       where
         !sl = S.length s
         onDone od hdr (Chunk !rest) = od hdr . Chunk $! Block (l + fromIntegral (sl - S.length rest)) rest
-        onDone od hdr (EOF      ex) = od hdr (EOF ex)
+        onDone od hdr (EOF      ex) = od hdr (EOF ex) -}
 
 
 -- | Compresses a stream of @Bytes@s into a stream of BGZF blocks,
@@ -367,7 +368,7 @@ liftBlock = liftI . step
 -- write out a block.  Then we continue writing until we're below block
 -- size.  On EOF, we flush and write the end marker.
 
-compressBgzf' :: MonadIO m => CompressParams -> Enumeratee BgzfChunk Bytes m a
+{- compressBgzf' :: MonadIO m => CompressParams -> Enumeratee BgzfChunk Bytes m a
 compressBgzf' (CompressParams lv np) = bgzfBlocks ><> parMapChunksIO np (compress1 lv)
 
 data BgzfChunk = SpecialChunk  !Bytes BgzfChunk
@@ -433,9 +434,9 @@ bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
 
 -- | Like 'compressBgzf'', with sensible defaults.
 compressBgzf :: MonadIO m => Enumeratee BgzfChunk Bytes m a
-compressBgzf = compressBgzfLv 6
+compressBgzf = compressBgzfLv 6 -}
 
-compressBgzfLv :: MonadIO m => Int -> Enumeratee BgzfChunk Bytes m a
+{- compressBgzfLv :: MonadIO m => Int -> Enumeratee BgzfChunk Bytes m a
 compressBgzfLv lv out =  do
     np <- liftIO $ getNumCapabilities
     compressBgzf' (CompressParams lv (np+2)) out
@@ -443,15 +444,16 @@ compressBgzfLv lv out =  do
 data CompressParams = CompressParams {
         compression_level :: Int,
         queue_depth :: Int }
-    deriving Show
+    deriving Show -}
 
-compressChunk :: Int -> Ptr CChar -> CUInt -> IO Bytes
-compressChunk lv ptr len =
+compressChunk :: Int -> ForeignPtr Word8 -> Int -> Int -> IO B.ByteString
+compressChunk lv fptr off len =
+    withForeignPtr fptr $ \ptr ->
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
     buf <- mallocBytes 65536
 
     -- steal header from the EOF marker (length is wrong for now)
-    S.unsafeUseAsCString bgzfEofMarker $ \eof ->
+    B.unsafeUseAsCString bgzfEofMarker $ \eof ->
         forM_ [0,4..16] $ \o -> do x <- peekByteOff eof o
                                    pokeByteOff buf o (x::Word32)
 
@@ -460,9 +462,9 @@ compressChunk lv ptr len =
     #{poke z_stream, zalloc}    stream nullPtr
     #{poke z_stream, zfree}     stream nullPtr
     #{poke z_stream, opaque}    stream nullPtr
-    #{poke z_stream, next_in}   stream ptr
+    #{poke z_stream, next_in}   stream (plusPtr ptr off)
     #{poke z_stream, next_out}  stream (buf `plusPtr` 18)
-    #{poke z_stream, avail_in}  stream len
+    #{poke z_stream, avail_in}  stream (fromIntegral len :: CUInt)
     #{poke z_stream, avail_out} stream (65536-18-8 :: CUInt)
 
     z_check "deflateInit2" =<< c_deflateInit2 stream (fromIntegral lv) #{const Z_DEFLATED}
@@ -472,7 +474,7 @@ compressChunk lv ptr len =
     z_check "deflateEnd" =<< c_deflateEnd stream
 
     crc0 <- c_crc32 0 nullPtr 0
-    crc  <- c_crc32 crc0 ptr len
+    crc  <- c_crc32 crc0 (plusPtr ptr off) (fromIntegral len)
 
     compressed_length <- (+) (18+8) `fmap` #{peek z_stream, total_out} stream
     when (compressed_length > 65536) $ error "produced too big a block"
@@ -484,5 +486,5 @@ compressChunk lv ptr len =
     pokeByteOff buf (compressed_length-8) (fromIntegral crc :: Word32)
     pokeByteOff buf (compressed_length-4) (fromIntegral len :: Word32)
 
-    S.unsafePackCStringFinalizer buf compressed_length (free buf)
+    B.unsafePackCStringFinalizer buf compressed_length (free buf)
 

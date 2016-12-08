@@ -13,20 +13,22 @@
 
 -- import Bio.Bam
 import BasePrelude
--- import Bio.Iteratee.Builder
+import Control.Concurrent.Async
+import Control.Concurrent.STM.TBQueue
 import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
 import System.Directory
 import System.FilePath
+import System.IO                           ( hPutStrLn, stderr, stdout )
 import Text.XML.Light               hiding ( Text )
 
 import qualified Data.ByteString        as B
 import qualified Data.Set               as S
-import qualified Data.Vector            as VV
-import qualified Data.Vector.Storable   as VS
 import qualified Data.Vector.Generic    as V
 
 import BCL
+import Bgzf
+import BgzfBuilder
 import Locs
 
 -- conversion of BCL/LOCS to BAM.  We go tile by tile, and for each tile
@@ -35,62 +37,98 @@ import Locs
 -- probably should.  We could also read the files for one tile while
 -- outputting another.)
 
-tileToBam :: LaneDef -> Tile -> Push
+tileToBam :: LaneDef -> Tile -> BgzfTokens
 tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..}
     -- XXX  For the time being, require the set of cycles to be a
     -- contiguous range starting at 1.
     | tile_cycles == [ 1 .. maximum tile_cycles ]
-        = mconcat $ zipWith one_cluster [0..] (V.toList vlocs)
+        = foldr ($) TkEnd $ zipWith one_cluster [0..] (V.toList vlocs)
     | otherwise = error $ "unhandled set of cycles: " ++ show tile_cycles
   where
     one_cluster i (px,py) =
-        pushBam (nullBamRec { b_qname = qname,
-                              b_flag  = maybe flagsSingle flagsReadOne cycles_read_two .|. get_flag i,
-                              b_seq   = V.fromList $ get_seq $ fromJust cycles_read_one,  -- length is known!
-                              b_qual  = V.fromList $ get_quals $ fromJust cycles_read_one,    -- length is known!
-                              b_exts  = common_exts }) <>
+        TkSetMark .
+        TkWord32 maxBound .                             -- rname
+        TkWord32 maxBound .                             -- pos
+        TkWord8 (fromIntegral lqname) .                 -- lengh of qname
+        TkWord8 0 .                                     -- mapq
+        TkWord16 4680 .                                 -- bin
+        TkWord16 0 .                                    -- n_cigar
+        TkWord16 (flagsReadOne .|. get_flag i) .        -- flag
+        TkWord32 n_seq .                                -- n_seq
+        TkWord32 maxBound .                             -- mrnm
+        TkWord32 maxBound .                             -- mpos
+        TkWord32 0 .                                    -- isize
+        qname .                                         -- qname
+        ( let Just (u,v) = cycles_read_one
+          in TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
+             TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) ) .
+        indexRead "XIZ" "YIZ" cycles_index_one .
+        indexRead "XJZ" "YJZ" cycles_index_two .
+        TkEndRecord .
+
         case cycles_read_two of
-            Nothing -> mempty
-            Just r2 -> pushBam (nullBamRec { b_qname = qname,
-                                             b_flag  = flagsReadTwo .|. get_flag i,
-                                             b_seq   = V.fromList $ get_seq r2,  -- length is known!
-                                             b_qual  = V.fromList $ get_quals r2,    -- length is known!
-                                             b_exts  = common_exts })
+            Nothing    -> id
+            Just (u,v) ->
+                TkSetMark .
+                TkWord32 maxBound .                             -- rname
+                TkWord32 maxBound .                             -- pos
+                TkWord8 (fromIntegral lqname) .                 -- lengh of qname
+                TkWord8 0 .                                     -- mapq
+                TkWord16 4680 .                                 -- bin
+                TkWord16 0 .                                    -- n_cigar
+                TkWord16 (flagsReadTwo .|. get_flag i) .        -- flag
+                TkWord32 n_seq .                                -- n_seq
+                TkWord32 maxBound .                             -- mrnm
+                TkWord32 maxBound .                             -- mpos
+                TkWord32 0 .                                    -- isize
+                qname .                                         -- qname
+                TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
+                TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) .
+                indexRead "XIZ" "YIZ" cycles_index_one .
+                indexRead "XJZ" "YJZ" cycles_index_two .
+                TkEndRecord
       where
-        qname       = fromString (printf "%s:%d:%d:%d" experiment tile_nbr px py)
-        common_exts = maybe id (indexRead "XI" "YI") cycles_index_one $
-                      maybe id (indexRead "XJ" "YJ") cycles_index_two $ []
+        lqname = B.length experiment + 4 + ilen tile_nbr + ilen px + ilen py
+        qname  = TkString experiment . TkDecimal tile_nbr .
+                 TkDecimal (fromIntegral px) . TkDecimal (fromIntegral py) . TkWord8 0
 
-        get_seq   (ra,re) = map (get_nucs i) (enumFromTo (ra-1) (re-1))
-        get_quals (ra,re) = map (get_qual i) (enumFromTo (ra-1) (re-1))
-        -- get_seq   (ra,re) = V.map (get_nucs i) $ V.slice (ra-1) (re-ra+1) tile_bcls
-        -- get_quals (ra,re) = V.map (get_qual i) $ V.slice (ra-1) (re-ra+1) tile_bcls
+        ilen x | x < 10 = 1
+               | x < 100 = 2
+               | x < 1000 = 3
+               | x < 10000 = 4
+               | x < 100000 = 5
+               | x < 1000000 = 6
+               | otherwise    = 7
 
-        indexRead k1 k2 rng
-            = insertE k1 (Text . fromString . map showNucleotides          $ get_seq   rng)
-            . insertE k2 (Text . B.pack . map ((+33) . fromIntegral . unQ) $ get_quals rng)
+        indexRead  _  _   Nothing    = id
+        indexRead k1 k2 (Just (u,v)) =
+              TkString k1 . TkBclSpecial (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0 .
+              TkString k2 . TkBclSpecial (BclArgs BclQualsAsc tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0
 
-    flagsSingle    = flagUnmapped
-    flagsReadOne _ = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
-    flagsReadTwo   = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
+    !n_seq = let Just (ra,re) = cycles_read_one in fromIntegral $ re-ra+1
 
-    get_flag i         = case vfilt V.!? i of Just x | odd x -> flagFailsQC ; _ -> 0
+    !flagsSingle  = flagUnmapped
+    !flagsReadTwo = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
-    -- i is cycle number number, j is cluster number
-    get_qual i j = Q $ (tile_bcls V.! (i + tile_stride * j)) `shiftR` 2
-    get_nucs i j = code_to_nucs $ tile_bcls V.! (i + tile_stride * j)
-    code_to_nucs x |    x    == 0 = nucsN
-                   | x .&. 3 == 0 = nucsA
-                   | x .&. 3 == 1 = nucsC
-                   | x .&. 3 == 2 = nucsG
-                   | otherwise    = nucsT
+    !flagsReadOne = case cycles_read_two of
+            Just  _ -> flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
+            Nothing -> flagsSingle
+
+    get_flag j = case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
+
+    flagPaired       = 0x1
+    flagUnmapped     = 0x4
+    flagMateUnmapped = 0x8
+    flagFirstMate    = 0x40
+    flagSecondMate   = 0x80
+    flagFailsQC      = 0x200
 
 
 -- | Definition of a lane to be processed.  Includes paths, read
 -- definitions.
 data LaneDef = LaneDef {
-    experiment :: String,
-    lane_number :: Int,
+    experiment :: !B.ByteString,
+    lane_number :: !Int,
 
     -- | Root of BCL hierarchy, contains BCLs in subdirectories, filter
     -- and control files.
@@ -128,7 +166,7 @@ default_lanedef ln = LaneDef
     , tiles            = Nothing }
 
 data Cfg = Cfg
-        { cfg_output :: BamMeta -> Iteratee [Push] IO ()
+        { cfg_output :: () -- BamMeta -> Iteratee [Push] IO ()
         , cfg_report :: String -> IO ()
         -- | only used when no run folder is speficied
         , cfg_lanes :: [Int]
@@ -136,14 +174,14 @@ data Cfg = Cfg
         , cfg_overrides :: [LaneDef] -> [LaneDef] }
 
 default_cfg :: Cfg
-default_cfg = Cfg { cfg_output    = protectTerm . pipeBamOutput
+default_cfg = Cfg { cfg_output    = () -- protectTerm . pipeBamOutput
                   , cfg_report    = const $ return ()
                   , cfg_lanes     = [1]
                   , cfg_overrides = id }
 
 options :: [OptDescr (Cfg -> IO Cfg)]
 options = [
-    Option "o" ["output"]               (ReqArg set_output    "FILE") "Write output to FILE",
+    -- Option "o" ["output"]               (ReqArg set_output    "FILE") "Write output to FILE",
     Option "l" ["lanes"]                (ReqArg set_lanes     "LIST") "Process only lanes in LIST",
     Option "t" ["tiles"]                (ReqArg set_tiles     "LIST") "Process only tiles in LIST",
     Option "e" ["experiment-name"]      (ReqArg set_expname   "NAME") "Override experiment name to NAME",
@@ -162,13 +200,13 @@ options = [
     set_bcl_path  a = override $ map (\l -> l { path_bcl  = a }) . take 1
     set_locs_path a = override $ map (\l -> l { path_locs = a }) . take 1
 
-    set_expname   a = override . map $ \l -> l { experiment       =                         a }
+    set_expname   a = override . map $ \l -> l { experiment       =              fromString a }
     set_read1     a = override . map $ \l -> l { cycles_read_one  = Just $ readWith  prange a }
     set_read2     a = override . map $ \l -> l { cycles_read_two  =        readWith pmrange a }
     set_index1    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
     set_index2    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
 
-    set_output  a c = return $ c { cfg_output = writeBamFile a }
+    -- set_output  a c = return $ c { cfg_output = writeBamFile a }
     set_verbose   c = return $ c { cfg_report = hPutStrLn stderr }
 
     set_tiles   a c = override (map (\l -> l { tiles = Just . snub $ readWith pstring_list a })) $
@@ -229,8 +267,8 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
     -- Try and drop the date from the run directory.  Ignores the
     -- trailing slash if it was specified.
     let experiment = case break (== '_') (takeBaseName $ dropTrailingPathSeparator rundir) of
-                        (l,r) | all isDigit l -> drop 1 r
-                        _                     -> takeBaseName rundir
+                        (l,r) | all isDigit l -> fromString $ drop 1 r
+                        _                     -> fromString $ takeBaseName rundir
 
     let path_bcl = rundir </> "Data/Intensities/BaseCalls/L00" ++ [intToDigit lane_number]
         path_locs = rundir </> "Data/Intensities/L00" ++ [intToDigit lane_number]
@@ -280,12 +318,12 @@ listCycles bcls = mapMaybe get_cycle <$> getDirectoryContents bcls
 
 
 -- For each tile, read locs and all the bcls.  Run tileToBam and emit.
-bamFromBcl :: (String -> IO ()) -> LaneDef -> Enumerator [Push] IO b
-bamFromBcl report ld@LaneDef{..} iter0 =
-    foldM (\iter fn -> do liftIO $ report fn
-                          tile <- readTile fn path_locs path_bcl [1..ce]
-                          enumPure1Chunk [tileToBam ld tile] iter)
-          iter0 (maybe [] id tiles)
+bamFromBcl :: (String -> IO ()) -> BgzfChan -> BB -> LaneDef -> IO BB
+bamFromBcl report chan bb0 ld@LaneDef{..} =
+    foldM (\bb fn -> do report fn
+                        tile <- readTile fn path_locs path_bcl [1..ce]
+                        encodeBgzf chan bb (tileToBam ld tile)
+          ) bb0 (maybe [] id tiles)
   where
     !ce = maybe id (max . snd) cycles_index_two $
           maybe id (max . snd) cycles_index_one $
@@ -298,7 +336,7 @@ main = do
     (opts, rs, errors) <- getOpt Permute options <$> getArgs
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Cfg{..} <- foldl (>>=) (return default_cfg) opts
-    add_pg <- addPG $ Just version
+    -- add_pg <- addPG $ Just version
 
     lanedefs <- case (rs, cfg_lanes) of
                     ([],[ln]) -> do let [ldef] = cfg_overrides [ default_lanedef ln ]
@@ -315,9 +353,19 @@ main = do
                     ( _,_   ) -> cfg_overrides . concat <$> mapM lanesFromRun rs
 
     mapM_ (cfg_report . show) lanedefs
-    foldr ((>=>) . bamFromBcl cfg_report) run lanedefs $
-            cfg_output (add_pg mempty)
 
+    chan <- atomically $ newTBQueue 16
+    reader <- async $ do bb <- newBuffer
+                         bb' <- encodeBgzf chan bb =<< encodeHeader
+                         bb'' <- foldM (bamFromBcl cfg_report chan) bb' lanedefs
+                         final_flush chan bb''
+
+    let go = do pid <- atomically $ readTBQueue chan
+                str <- wait pid
+                if B.null str then B.hPut stdout bgzfEofMarker
+                              else B.hPut stdout str >> go
+    go
+    wait reader -- should already be dead
 
 -- Look for a useable XML file, either RunInfo.xml, or RunParameters.xml.
 -- We'll match case insensitively, because sometimes case gets mangled
@@ -347,4 +395,17 @@ toReadDef elt = do
     rbool (Just "Y") = True
     rbool (Just "y") = True
     rbool          _ = False
+
+
+-- Wants a program version and a command line.
+encodeHeader :: IO BgzfTokens
+encodeHeader = do
+    pn <- getProgName
+    as <- getArgs
+
+    let hdr = "@HD\tVN:1.0\n@PG\tID:" ++ pn ++ "\tPN:" ++ pn ++
+              "\tCL:" ++ unwords as ++ "\tVN:" ++ showVersion version ++ "\n"
+
+    return $ TkString "BAM\1" $ TkSetMark               $ TkString (fromString hdr)
+           $ TkEndRecord      $ TkWord32 0 {- n_refs -} $ TkEnd
 
