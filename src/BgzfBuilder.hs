@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 -- | Buffer builder to assemble Bgzf blocks.  The plan is to serialize
 -- stuff (BAM and BCF) into a buffer, then Bgzf chunks from the buffer.
 -- We use a large buffer, and we always make sure there is plenty of
@@ -226,64 +227,18 @@ loop_bcl_special p (BclArgs tp vec stride u v i) =
             qual_loop_asc p stride (plusPtr q i) u v
             return $ v - u + 1
 
+foreign import ccall unsafe "nuc_loop"
+    nuc_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
 
-nuc_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
-nuc_loop !p !stride !q !u !v
-    | u <  v = do a <- peekByteOff q (u * stride)
-                  b <- peekByteOff q (u * stride + stride)
-                  let !a' = if a == 0 then 0xF0 else 0x10 `shiftL` (a .&. 3)    :: Word8
-                      !b' = if b == 0 then 0xF  else 0x1  `shiftL` (b .&. 3)    :: Word8
-                  poke p $! a' .|. b'
-                  nuc_loop (plusPtr p 1) stride q (u+2) v
+foreign import ccall unsafe "nuc_loop_asc"
+    nuc_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
 
-    | u == v = do a <- peekByteOff q (u * stride)
-                  let !a' = if a == 0 then 0xF0 else 0x10 `shiftL` (a .&. 3)    :: Word8
-                  poke p a'
+foreign import ccall unsafe "qual_loop"
+    qual_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
 
-    | otherwise = return ()
+foreign import ccall unsafe "qual_loop_asc"
+    qual_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
 
-
-nuc_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
-nuc_loop_asc !p !stride !q !u !v
-    | u <= v = do a <- peekByteOff q (u * stride)
-                  poke p . fromIntegral . ord $ if (a :: Word8) == 0 then 'N'
-                                                else if a .&. 3 == 0 then 'A'
-                                                else if a .&. 3 == 1 then 'C'
-                                                else if a .&. 3 == 2 then 'G'
-                                                else                      'T'
-                  nuc_loop_asc (plusPtr p 1) stride q (u+1) v
-    | otherwise = poke p 0
-
-
-qual_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
-qual_loop !p !stride !q !u !v
-    | u <= v = do a <- peekByteOff q (u * stride)
-                  poke p (shiftR a 2 .&. 0x3f :: Word8)
-                  qual_loop (plusPtr p 1) stride q (u+1) v
-    | otherwise = return ()
-
-
-qual_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
-qual_loop_asc !p !stride !q !u !v
-    | u <= v = do a <- peekByteOff q (u * stride)
-                  poke p (33 + (shiftR a 2 .&. 0x3f) :: Word8)
-                  qual_loop_asc (plusPtr p 1) stride q (u+1) v
-    | otherwise = poke p 0
-
-
-int_loop :: Ptr Word8 -> Int -> IO Int
-int_loop !p  0  = do poke p (fromIntegral $ ord '0') ; return 1
-int_loop !p !x0 = go 0 x0
-  where
-    go !i !x | x == 0 = gone i 0 (i-1)
-             | otherwise = do let (x',d) = x `quotRem` 10
-                              pokeByteOff p i (fromIntegral (ord '0' + d) :: Word8)
-                              go (i+1) x'
-
-    gone !r !i !j | i < j = do a <- peekByteOff p i
-                               b <- peekByteOff p j
-                               pokeByteOff p i (b :: Word8)
-                               pokeByteOff p j (a :: Word8)
-                               gone r (i+1) (j-1)
-               | otherwise = return r
+foreign import ccall unsafe "int_loop"
+    int_loop :: Ptr Word8 -> Int -> IO Int
 

@@ -70,17 +70,9 @@ executable bcl2bam
                        zlib                     >= 0.5 && < 0.7
   hs-source-dirs:      src
   default-language:    Haskell2010
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts -threaded
+  Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N2
   Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards
-  -- Build-depends:       async,
-                       -- base,
-                       -- biohazard,
-                       -- bytestring,
-                       -- containers,
-                       -- directory,
-                       -- filepath,
-                       -- vector,
+  C-sources:           cbits/loops.c
 
   other-modules:       BCL, BgzfBuilder, Bgzf, Locs

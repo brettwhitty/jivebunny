@@ -49,11 +49,8 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
         TkSetMark .
         TkWord32 maxBound .                             -- rname
         TkWord32 maxBound .                             -- pos
-        TkWord8 (fromIntegral lqname) .                 -- lengh of qname
-        TkWord8 0 .                                     -- mapq
-        TkWord16 4680 .                                 -- bin
-        TkWord16 0 .                                    -- n_cigar
-        TkWord16 (flagsReadOne .|. get_flag i) .        -- flag
+        TkWord32 (0x12480000 .|. fromIntegral lqname) . -- lqname, mapq, bin
+        TkWord32 (shiftL (flagsReadOne .|. get_flag i) 16) . -- n_cigar, flag
         TkWord32 n_seq .                                -- n_seq
         TkWord32 maxBound .                             -- mrnm
         TkWord32 maxBound .                             -- mpos
@@ -72,11 +69,8 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
                 TkSetMark .
                 TkWord32 maxBound .                             -- rname
                 TkWord32 maxBound .                             -- pos
-                TkWord8 (fromIntegral lqname) .                 -- lengh of qname
-                TkWord8 0 .                                     -- mapq
-                TkWord16 4680 .                                 -- bin
-                TkWord16 0 .                                    -- n_cigar
-                TkWord16 (flagsReadTwo .|. get_flag i) .        -- flag
+                TkWord32 (0x12480000 .|. fromIntegral lqname) . -- lqname, mapq, bin
+                TkWord32 (shiftL (flagsReadTwo .|. get_flag i) 16) .        -- n_cigar, flag
                 TkWord32 n_seq .                                -- n_seq
                 TkWord32 maxBound .                             -- mrnm
                 TkWord32 maxBound .                             -- mpos
