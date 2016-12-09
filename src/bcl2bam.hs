@@ -19,7 +19,7 @@ import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
 import System.Directory
 import System.FilePath
-import System.IO                           ( hPutStrLn, stderr, stdout )
+import System.IO                           ( hPutStrLn, stderr, stdout, withFile, IOMode(..) )
 import Text.XML.Light               hiding ( Text )
 
 import qualified Data.ByteString        as B
@@ -160,7 +160,7 @@ default_lanedef ln = LaneDef
     , tiles            = Nothing }
 
 data Cfg = Cfg
-        { cfg_output :: () -- BamMeta -> Iteratee [Push] IO ()
+        { cfg_output :: (Handle -> IO ()) -> IO ()
         , cfg_report :: String -> IO ()
         -- | only used when no run folder is speficied
         , cfg_lanes :: [Int]
@@ -168,14 +168,14 @@ data Cfg = Cfg
         , cfg_overrides :: [LaneDef] -> [LaneDef] }
 
 default_cfg :: Cfg
-default_cfg = Cfg { cfg_output    = () -- protectTerm . pipeBamOutput
+default_cfg = Cfg { cfg_output    = \k -> k stdout
                   , cfg_report    = const $ return ()
                   , cfg_lanes     = [1]
                   , cfg_overrides = id }
 
 options :: [OptDescr (Cfg -> IO Cfg)]
 options = [
-    -- Option "o" ["output"]               (ReqArg set_output    "FILE") "Write output to FILE",
+    Option "o" ["output"]               (ReqArg set_output    "FILE") "Write output to FILE",
     Option "l" ["lanes"]                (ReqArg set_lanes     "LIST") "Process only lanes in LIST",
     Option "t" ["tiles"]                (ReqArg set_tiles     "LIST") "Process only tiles in LIST",
     Option "e" ["experiment-name"]      (ReqArg set_expname   "NAME") "Override experiment name to NAME",
@@ -200,7 +200,7 @@ options = [
     set_index1    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
     set_index2    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
 
-    -- set_output  a c = return $ c { cfg_output = writeBamFile a }
+    set_output  a c = return $ c { cfg_output = \k -> withFile (a++"#") WriteMode k >> renameFile (a++"#") a }
     set_verbose   c = return $ c { cfg_report = hPutStrLn stderr }
 
     set_tiles   a c = override (map (\l -> l { tiles = Just . snub $ readWith pstring_list a })) $
@@ -330,7 +330,6 @@ main = do
     (opts, rs, errors) <- getOpt Permute options <$> getArgs
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Cfg{..} <- foldl (>>=) (return default_cfg) opts
-    -- add_pg <- addPG $ Just version
 
     lanedefs <- case (rs, cfg_lanes) of
                     ([],[ln]) -> do let [ldef] = cfg_overrides [ default_lanedef ln ]
@@ -354,12 +353,14 @@ main = do
                          bb'' <- foldM (bamFromBcl cfg_report chan) bb' lanedefs
                          final_flush chan bb''
 
-    let go = do pid <- atomically $ readTBQueue chan
-                str <- wait pid
-                if B.null str then B.hPut stdout bgzfEofMarker
-                              else B.hPut stdout str >> go
-    go
-    wait reader -- should already be dead
+    cfg_output $ \hdl ->
+        let go = do pid <- atomically $ readTBQueue chan
+                    str <- wait pid
+                    if B.null str then B.hPut hdl bgzfEofMarker
+                                  else B.hPut hdl str >> go
+        in go
+    wait reader -- should already be dead?
+
 
 -- Look for a useable XML file, either RunInfo.xml, or RunParameters.xml.
 -- We'll match case insensitively, because sometimes case gets mangled
@@ -391,7 +392,6 @@ toReadDef elt = do
     rbool          _ = False
 
 
--- Wants a program version and a command line.
 encodeHeader :: IO BgzfTokens
 encodeHeader = do
     pn <- getProgName
