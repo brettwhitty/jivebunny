@@ -11,10 +11,13 @@
 -- restrict to a subset of lanes in this case.  The list of tiles can be
 -- overridden from the command line.
 
--- import Bio.Bam
 import BasePrelude
 import Control.Concurrent.Async
 import Control.Concurrent.STM.TBQueue
+import Foreign.ForeignPtr
+import Foreign.Marshal.Utils
+import Foreign.Storable
+import Foreign.Ptr
 import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
 import System.Directory
@@ -22,9 +25,11 @@ import System.FilePath
 import System.IO                           ( hPutStrLn, stderr, stdout, withFile, IOMode(..) )
 import Text.XML.Light               hiding ( Text )
 
-import qualified Data.ByteString        as B
-import qualified Data.Set               as S
-import qualified Data.Vector.Generic    as V
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Internal   as B ( ByteString(..) )
+import qualified Data.ByteString.Unsafe     as B
+import qualified Data.Set                   as S
+import qualified Data.Vector.Generic        as V
 
 import BCL
 import Bgzf
@@ -47,15 +52,15 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
   where
     one_cluster i (px,py) =
         TkSetMark .
-        TkWord32 maxBound .                             -- rname
-        TkWord32 maxBound .                             -- pos
-        TkWord32 (0x12480000 .|. fromIntegral lqname) . -- lqname, mapq, bin
-        TkWord32 (shiftL (flagsReadOne .|. get_flag i) 16) . -- n_cigar, flag
-        TkWord32 n_seq .                                -- n_seq
-        TkWord32 maxBound .                             -- mrnm
-        TkWord32 maxBound .                             -- mpos
-        TkWord32 0 .                                    -- isize
-        qname .                                         -- qname
+        TkWord32 maxBound .                                         -- rname
+        TkWord32 maxBound .                                         -- pos
+        TkWord32 (0x12480000 .|. fromIntegral lqname) .             -- lqname, mapq, bin
+        TkWord32 (shiftL (flagsReadOne .|. get_flag i) 16) .        -- n_cigar, flag
+        TkWord32 n_seq .                                            -- n_seq
+        TkWord32 maxBound .                                         -- mrnm
+        TkWord32 maxBound .                                         -- mpos
+        TkWord32 0 .                                                -- isize
+        qname .                                                     -- qname
         ( let Just (u,v) = cycles_read_one
           in TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
              TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) ) .
@@ -67,15 +72,15 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
             Nothing    -> id
             Just (u,v) ->
                 TkSetMark .
-                TkWord32 maxBound .                             -- rname
-                TkWord32 maxBound .                             -- pos
-                TkWord32 (0x12480000 .|. fromIntegral lqname) . -- lqname, mapq, bin
+                TkWord32 maxBound .                                         -- rname
+                TkWord32 maxBound .                                         -- pos
+                TkWord32 (0x12480000 .|. fromIntegral lqname) .             -- lqname, mapq, bin
                 TkWord32 (shiftL (flagsReadTwo .|. get_flag i) 16) .        -- n_cigar, flag
-                TkWord32 n_seq .                                -- n_seq
-                TkWord32 maxBound .                             -- mrnm
-                TkWord32 maxBound .                             -- mpos
-                TkWord32 0 .                                    -- isize
-                qname .                                         -- qname
+                TkWord32 n_seq .                                            -- n_seq
+                TkWord32 maxBound .                                         -- mrnm
+                TkWord32 maxBound .                                         -- mpos
+                TkWord32 0 .                                                -- isize
+                qname .                                                     -- qname
                 TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
                 TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) .
                 indexRead "XIZ" "YIZ" cycles_index_one .
@@ -116,6 +121,107 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
     flagFirstMate    = 0x40
     flagSecondMate   = 0x80
     flagFailsQC      = 0x200
+
+
+tileToBamBrute :: LaneDef -> Tile -> BgzfChan -> BB -> IO BB
+tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..} out = go 0
+  where
+    go cnum bb
+        | cnum == V.length vlocs = return bb
+
+        | size bb - used bb > minsize =
+            withForeignPtr (buffer bb) (\p ->
+                go_fast bb cnum (p `plusPtr` used bb) (size bb - used bb) >>= \(cnum', p') ->
+                return (cnum', p' `minusPtr` p)) >>= \(cnum', use') ->
+            flush_blocks out bb { used = use' } >>= go cnum'
+
+        | otherwise =
+            expandBuffer bb >>= go cnum
+
+
+    go_fast bb !i p0 !room
+        | i == V.length vlocs || room < minsize = return (i,p0)
+
+        | otherwise = do
+            p1 <- one_read flagsReadOne (fromJust cycles_read_one) p0
+            p2 <- case cycles_read_two of
+                        Nothing -> return p1
+                        Just cs -> one_read flagsReadTwo cs p1
+            go_fast bb (succ i) p2 (room - (p2 `minusPtr` p0))
+
+      where
+        one_read flags (u,v) p = do
+            pokeByteOff p  4 (maxBound :: Word32)                               -- rname
+            pokeByteOff p  8 (maxBound :: Word32)                               -- pos
+            pokeByteOff p 12 (0x12480000 .|. fromIntegral lqname :: Word32)     -- lqname, mapq, bin
+            pokeByteOff p 16 (shiftL (flags .|. get_flag i) 16 :: Word32)       -- n_cigar, flag
+            pokeByteOff p 20 (fromIntegral (v-u+1) :: Word32)                   -- n_seq
+            pokeByteOff p 24 (maxBound :: Word32)                               -- mrnm
+            pokeByteOff p 28 (maxBound :: Word32)                               -- mpos
+            pokeByteOff p 32 (0 :: Word32)                                      -- isize
+            let ln = B.length experiment
+            B.unsafeUseAsCString experiment $ \q ->
+                copyBytes (p `plusPtr` 36) (castPtr q) ln
+            let p1 = p `plusPtr` (36+ln)
+            p2 <- plusPtr p1 <$> int_loop p1 tile_nbr
+            p3 <- plusPtr p2 <$> int_loop p2 (fromIntegral px)
+            p4 <- plusPtr p3 <$> int_loop p3 (fromIntegral py)
+            pokeByteOff p4 0 (0 :: Word8)
+
+            let p5 = plusPtr p4 1
+            p6 <- plusPtr p5 <$> loop_bcl_special p5 (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
+            p7 <- plusPtr p6 <$> loop_bcl_special p6 (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
+
+            p8 <- indexRead p7 "XIZ" "YIZ" cycles_index_one
+            p9 <- indexRead p8 "XJZ" "YJZ" cycles_index_two
+            pokeByteOff p 0 (fromIntegral $ (p9 `minusPtr` p) - 4 :: Word32)
+            return p9
+
+
+        (px,py) = vlocs V.! i
+        lqname = B.length experiment + 4 + ilen tile_nbr + ilen px + ilen py
+
+        ilen x | x < 10 = 1
+               | x < 100 = 2
+               | x < 1000 = 3
+               | x < 10000 = 4
+               | x < 100000 = 5
+               | x < 1000000 = 6
+               | otherwise    = 7
+
+        indexRead pp  _  _   Nothing    = return pp
+        indexRead pp k1 k2 (Just (u,v)) = do
+            B.unsafeUseAsCString k1 $ \q -> copyBytes pp (castPtr q) (B.length k1)
+            l1 <- loop_bcl_special (pp `plusPtr` B.length k1) (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i)
+            let pp1 = pp `plusPtr` (B.length k1 + l1 + 1)
+            pokeByteOff pp1 (-1) (0 :: Word8)
+
+            B.unsafeUseAsCString k2 $ \q -> copyBytes pp1 (castPtr q) (B.length k2)
+            l2 <- loop_bcl_special (pp1 `plusPtr` B.length k2) (BclArgs BclQualsAsc tile_bcls tile_stride (u-1) (v-1) i)
+            let pp2 = pp1 `plusPtr` (B.length k2 + l2 + 1)
+            pokeByteOff pp2 (-1) (0 :: Word8)
+            return pp2
+
+
+    !minsize = 2 * length tile_cycles + 2 * B.length experiment + 256
+
+    !flagsSingle  = flagUnmapped
+    !flagsReadTwo = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
+
+    !flagsReadOne = case cycles_read_two of
+            Just  _ -> flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
+            Nothing -> flagsSingle
+
+    get_flag j = case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
+
+    flagPaired       = 0x1
+    flagUnmapped     = 0x4
+    flagMateUnmapped = 0x8
+    flagFirstMate    = 0x40
+    flagSecondMate   = 0x80
+    flagFailsQC      = 0x200
+
+
 
 
 -- | Definition of a lane to be processed.  Includes paths, read
@@ -316,7 +422,8 @@ bamFromBcl :: (String -> IO ()) -> BgzfChan -> BB -> LaneDef -> IO BB
 bamFromBcl report chan bb0 ld@LaneDef{..} =
     foldM (\bb fn -> do report fn
                         tile <- readTile fn path_locs path_bcl [1..ce]
-                        encodeBgzf chan bb (tileToBam ld tile)
+                        tileToBamBrute ld tile chan bb
+                        -- encodeBgzf chan bb (tileToBam ld tile)
           ) bb0 (maybe [] id tiles)
   where
     !ce = maybe id (max . snd) cycles_index_two $

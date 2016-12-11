@@ -121,12 +121,11 @@ store_to_vec v ls = VSM.unsafeWith v                                $ \p ->
 -- make use of that, but right now doesn't.
 
 readTile :: FilePath -> FilePath -> FilePath -> [Int] -> IO Tile
-readTile fn path_locs path_bcl tile_cycles = do
+readTile fn path_locs path_bcl tile_cycles =
+  do
     tile_locs   <- get_locs
     tile_filter <- get_filt
 
-    -- XXX  This may need padding in pathological cases.  But what
-    -- constitutes a pathological case??
     let tile_stride = num_locs tile_locs
     vec <- VSM.new (length tile_cycles * tile_stride)
 
@@ -136,6 +135,7 @@ readTile fn path_locs path_bcl tile_cycles = do
                         in async $ try_read_or (fn_bcl <.> "gz") (readBCL vec') $
                                    try_read_or fn_bcl            (readBCL vec') $
                                    VSM.set vec' 0
+
         ) [0, tile_stride ..] tile_cycles
 
     tile_bcls <- VS.unsafeFreeze vec

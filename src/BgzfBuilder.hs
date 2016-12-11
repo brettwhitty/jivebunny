@@ -171,9 +171,8 @@ encodeBgzf out bb0 tk
                                     copyBytes (p `plusPtr` use) q ln
                                go_fast p bb (use + ln) tk'
 
-        TkDecimal  x tk' -> do pokeByteOff p use (fromIntegral (ord ':') :: Word8)
-                               ln <- int_loop (p `plusPtr` succ use) x
-                               go_fast p bb (use + ln + 1) tk'
+        TkDecimal  x tk' -> do ln <- int_loop (p `plusPtr` use) x
+                               go_fast p bb (use + ln) tk'
 
         TkLnString s tk'
             -- Too big, can't handle.  We will get bigger buffers and

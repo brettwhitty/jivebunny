@@ -54,9 +54,10 @@ void qual_loop_asc( char* p, int stride, char* q, int u, int v )
 
 int int_loop( char* p, int x )
 {
+    *p++ = ':' ;
     if( x == 0 ) {
         *p = '0' ;
-        return 1 ;
+        return 2 ;
     }
     char *q = p ;
     while( x > 0 ) {
@@ -70,7 +71,7 @@ int int_loop( char* p, int x )
         *p++ = *q ;
         *q-- = c ;
     }
-    return r ;
+    return r+1 ;
 }
 
 
