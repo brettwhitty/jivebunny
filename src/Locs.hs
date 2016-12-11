@@ -1,4 +1,3 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
 -- | Parsing Illumina location files.  It appears we have to support
 -- pos.txt, locs and clocs files; don't know if they come in compressed
 -- versions, too.  Either way, we have one file per tile, and it lists X

@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards, PatternGuards #-}
 -- BCL to BAM command line driver
 -- This should become part of Jivebunny; we'll see if the standalone
 -- version will retain any value.

@@ -1,4 +1,3 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
 -- | Buffer builder to assemble Bgzf blocks.  The plan is to serialize
 -- stuff (BAM and BCF) into a buffer, then Bgzf chunks from the buffer.
 -- We use a large buffer, and we always make sure there is plenty of
@@ -118,8 +117,6 @@ final_flush qq bb = do
 -- downstream as soon as possible.
 encodeBgzf :: BgzfChan -> BB -> BgzfTokens -> IO BB
 encodeBgzf out bb0 tk
-    -- | trace (show bb0) False = undefined
-
     -- Slow path:  make sure we have space, ...
     | size bb0 - used bb0 < 1024 =
             expandBuffer bb0 >>= \bb' ->

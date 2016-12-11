@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 -- | Handling of Illumina BCL files.
 -- We will support plain BCL, gzipped BCL and bgzf'ed BCL.  Plain BCL
 -- starts with a cluster count (4 bytes, little-endian).  Base calls
