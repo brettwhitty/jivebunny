@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 -- | Handling of Illumina BCL files.
 -- We will support plain BCL, gzipped BCL and bgzf'ed BCL.  Plain BCL
 -- starts with a cluster count (4 bytes, little-endian).  Base calls
@@ -24,8 +25,9 @@ import Zlib                             ( decompressGzip )
 import Control.Concurrent.Async         ( async, wait )
 import Data.Vector.Fusion.Util          ( Id )
 import Data.Vector.Generic              ( unstream )
-import Foreign.Ptr                      ( plusPtr, castPtr )
-import Foreign.Marshal.Utils            ( copyBytes, fillBytes )
+import Foreign.C.Types			( CSize(..) )
+import Foreign.Ptr                      ( Ptr, plusPtr, castPtr )
+import Foreign.Marshal.Utils            ( copyBytes )
 import System.Directory
 import System.FilePath
 
@@ -104,9 +106,10 @@ store_to_vec v ls = VSM.unsafeWith v                                $ \p ->
         | otherwise       =    B.unsafeUseAsCString s $ \ps ->
                                     copyBytes pd ps l
 
-    cp pd l [] = fillBytes pd 0 l
+    cp pd l [] = fillBytes pd 0 (fromIntegral l)
 
-
+foreign import ccall unsafe "string.h memset"
+    fillBytes :: Ptr a -> Int -> CSize -> IO ()
 
 -- | Read a subset of the cycles of a tile.  We read the locations
 -- first, because that tells us the number of clusters.  We then

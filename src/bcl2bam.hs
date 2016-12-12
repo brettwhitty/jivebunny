@@ -25,8 +25,7 @@ import System.IO                           ( hPutStrLn, stderr, stdout, withFile
 import Text.XML.Light               hiding ( Text )
 
 import qualified Data.ByteString            as B
-import qualified Data.ByteString.Internal   as B ( ByteString(..) )
-import qualified Data.ByteString.Unsafe     as B
+import qualified Data.ByteString.Unsafe     as B ( unsafeUseAsCString )
 import qualified Data.Set                   as S
 import qualified Data.Vector.Generic        as V
 
