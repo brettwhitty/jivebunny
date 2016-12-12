@@ -25,7 +25,7 @@ import Zlib                             ( decompressGzip )
 import Control.Concurrent.Async         ( async, wait )
 import Data.Vector.Fusion.Util          ( Id )
 import Data.Vector.Generic              ( unstream )
-import Foreign.C.Types			( CSize(..) )
+import Foreign.C.Types                  ( CSize(..) )
 import Foreign.Ptr                      ( Ptr, plusPtr, castPtr )
 import Foreign.Marshal.Utils            ( copyBytes )
 import System.Directory
