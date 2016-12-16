@@ -145,8 +145,8 @@ readTile fn path_locs path_bcl tile_cycles =
 
   where
     tile_nbr = case reads . reverse . takeWhile (/= '_')
-                  . reverse $ takeDirectory fn_locs of
-                        [(n,"")] -> n ; _ -> 0
+                  . reverse $ takeBaseName fn_locs of
+                        [(n,"")] -> n ; _ -> 9999
 
     fn_locs  = path_locs </> fn
     get_locs = try_read_or (fn_locs <.> "clocs.gz") readClocs $
