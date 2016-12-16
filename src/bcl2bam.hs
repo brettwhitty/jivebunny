@@ -302,7 +302,7 @@ options = [
     set_read1     a = override . map $ \l -> l { cycles_read_one  = Just $ readWith  prange a }
     set_read2     a = override . map $ \l -> l { cycles_read_two  =        readWith pmrange a }
     set_index1    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
-    set_index2    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
+    set_index2    a = override . map $ \l -> l { cycles_index_two =        readWith pmrange a }
 
     set_output  a c = return $ c { cfg_output = \k -> withFile (a++"#") WriteMode k >> renameFile (a++"#") a }
     set_verbose   c = return $ c { cfg_report = hPutStrLn stderr }
