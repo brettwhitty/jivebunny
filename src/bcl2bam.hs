@@ -85,8 +85,8 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
                 indexRead "XJZ" "YJZ" cycles_index_two .
                 TkEndRecord
       where
-        lqname = B.length experiment + 4 + ilen tile_nbr + ilen px + ilen py
-        qname  = TkString experiment . TkDecimal tile_nbr .
+        lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
+        qname  = TkString experiment . TkDecimal lane_number . TkDecimal tile_nbr .
                  TkDecimal (fromIntegral px) . TkDecimal (fromIntegral py) . TkWord8 0
 
         ilen x | x < 10 = 1
@@ -137,15 +137,15 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
             expandBuffer bb >>= go cnum
 
 
-    go_fast bb !i p0 !room
-        | i == V.length vlocs || room < minsize = return (i,p0)
+    go_fast bb !i pp !room
+        | i == V.length vlocs || room < minsize = return (i,pp)
 
         | otherwise = do
-            p1 <- one_read flagsReadOne (fromJust cycles_read_one) p0
+            p1 <- one_read flagsReadOne (fromJust cycles_read_one) pp
             p2 <- case cycles_read_two of
                         Nothing -> return p1
                         Just cs -> one_read flagsReadTwo cs p1
-            go_fast bb (succ i) p2 (room - (p2 `minusPtr` p0))
+            go_fast bb (succ i) p2 (room - (p2 `minusPtr` pp))
 
       where
         one_read flags (u,v) p = do
@@ -160,7 +160,8 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
             let ln = B.length experiment
             B.unsafeUseAsCString experiment $ \q ->
                 copyBytes (p `plusPtr` 36) (castPtr q) ln
-            let p1 = p `plusPtr` (36+ln)
+            let p0 = p `plusPtr` (36+ln)
+            p1 <- plusPtr p0 <$> int_loop p0 lane_number
             p2 <- plusPtr p1 <$> int_loop p1 tile_nbr
             p3 <- plusPtr p2 <$> int_loop p2 (fromIntegral px)
             p4 <- plusPtr p3 <$> int_loop p3 (fromIntegral py)
@@ -177,7 +178,7 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
 
 
         (px,py) = vlocs V.! i
-        lqname = B.length experiment + 4 + ilen tile_nbr + ilen px + ilen py
+        lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
 
         ilen x | x < 10 = 1
                | x < 100 = 2
@@ -187,11 +188,11 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
                | x < 1000000 = 6
                | otherwise    = 7
 
-        indexRead pp  _  _   Nothing    = return pp
-        indexRead pp k1 k2 (Just (u,v)) = do
-            B.unsafeUseAsCString k1 $ \q -> copyBytes pp (castPtr q) (B.length k1)
-            l1 <- loop_bcl_special (pp `plusPtr` B.length k1) (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i)
-            let pp1 = pp `plusPtr` (B.length k1 + l1 + 1)
+        indexRead p'  _  _   Nothing    = return p'
+        indexRead p' k1 k2 (Just (u,v)) = do
+            B.unsafeUseAsCString k1 $ \q -> copyBytes p' (castPtr q) (B.length k1)
+            l1 <- loop_bcl_special (p' `plusPtr` B.length k1) (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i)
+            let pp1 = p' `plusPtr` (B.length k1 + l1 + 1)
             pokeByteOff pp1 (-1) (0 :: Word8)
 
             B.unsafeUseAsCString k2 $ \q -> copyBytes pp1 (castPtr q) (B.length k2)
