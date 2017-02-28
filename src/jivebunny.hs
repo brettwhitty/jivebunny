@@ -27,7 +27,7 @@ import Foreign.C.Types
 import Foreign.Marshal.Alloc
 import Foreign.Ptr
 import Foreign.Storable
-import Paths_biohazard                  ( version, getDataFileName )
+import Paths_jivebunny                  ( version, getDataFileName )
 import System.Console.GetOpt
 import System.Random                    ( randomRIO )
 
@@ -298,7 +298,7 @@ data Conf = Conf {
         cf_samplesize :: Int,
         cf_readgroups :: [FilePath],
         cf_implied    :: [T.Text],
-        cf_merge      :: Maybe ([U.Vector Nucleotides], [U.Vector Nucleotides]) }
+        cf_merge      :: Maybe ([VS.Vector Nucleotides], [VS.Vector Nucleotides]) }
 
 defaultConf :: IO Conf
 defaultConf = do ixdb <- getDataFileName "index_db.json"
