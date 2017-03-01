@@ -20,8 +20,9 @@
 module BCL where
 
 import Locs
-import BasePrelude
-import Zlib                             ( decompressGzip )
+
+import Bio.Prelude
+import Bio.Util.Zlib                    ( decompressGzip )
 import Control.Concurrent.Async         ( async, wait )
 import Data.Vector.Fusion.Util          ( Id )
 import Data.Vector.Generic              ( unstream )

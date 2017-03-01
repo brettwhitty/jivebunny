@@ -9,8 +9,8 @@
 
 module Locs where
 
-import BasePrelude
-import Zlib
+import Bio.Prelude
+import Bio.Util.Zlib                        ( decompressGzip )
 import Data.Vector.Fusion.Bundle.Monadic    ( fromStream )
 import Data.Vector.Fusion.Bundle.Size       ( Size(..) )
 import Data.Vector.Fusion.Stream.Monadic    ( Stream(..), Step(..) )

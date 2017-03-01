@@ -45,7 +45,7 @@ executable bcl2bam
   main-is:             bcl2bam.hs
   build-depends:       async                    >= 2.0 && < 2.2,
                        base                     >= 4.6 && < 4.10,
-                       base-prelude             == 1.0.*,
+                       biohazard                >= 0.6.10 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        containers               >= 0.4.1 && < 0.6,
                        directory                >= 1.2 && < 2.0,
@@ -61,4 +61,4 @@ executable bcl2bam
                        BangPatterns, RecordWildCards,
                        ForeignFunctionInterface, PatternGuards
   c-sources:           cbits/loops.c
-  other-modules:       BCL, BgzfBuilder, Bgzf, Locs
+  other-modules:       BCL, BgzfBuilder, Locs

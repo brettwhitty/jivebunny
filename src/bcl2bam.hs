@@ -10,7 +10,8 @@
 -- restrict to a subset of lanes in this case.  The list of tiles can be
 -- overridden from the command line.
 
-import BasePrelude
+import Bio.Iteratee.Bgzf                   ( bgzfEofMarker )
+import Bio.Prelude
 import Control.Concurrent.Async
 import Control.Concurrent.STM.TBQueue
 import Foreign.ForeignPtr
@@ -30,7 +31,6 @@ import qualified Data.Set                   as S
 import qualified Data.Vector.Generic        as V
 
 import BCL
-import Bgzf
 import BgzfBuilder
 import Locs
 

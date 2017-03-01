@@ -9,14 +9,15 @@
 
 module BgzfBuilder where
 
-import Bgzf
-import BasePrelude
-import Control.Concurrent.Async
-import Control.Concurrent.STM.TBQueue
-import Foreign.ForeignPtr
-import Foreign.Marshal.Utils
-import Foreign.Ptr
-import Foreign.Storable
+import Bio.Iteratee.Bgzf                   ( compressChunk, maxBlockSize )
+import Bio.Prelude
+import Control.Concurrent.Async            ( Async, async )
+import Control.Concurrent.STM.TBQueue      ( TBQueue, writeTBQueue )
+import Foreign.C.Types                     ( CChar )
+import Foreign.ForeignPtr                  ( ForeignPtr, withForeignPtr, mallocForeignPtrBytes )
+import Foreign.Marshal.Utils               ( copyBytes )
+import Foreign.Ptr                         ( Ptr, plusPtr )
+import Foreign.Storable                    ( pokeByteOff )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Internal   as B ( ByteString(..) )
@@ -32,7 +33,7 @@ import qualified Data.Vector.Storable       as VS
 -- Unused 'mark' must be set to (maxBound::Int) so it doesn't interfere
 -- with flushing.
 
-data BB = BB { buffer :: {-# UNPACK #-} !(ForeignPtr Word8)
+data BB = BB { buffer :: {-# UNPACK #-} !(ForeignPtr CChar)
              , size   :: {-# UNPACK #-} !Int            -- total size of buffer
              , off    :: {-# UNPACK #-} !Int            -- offset of active portion
              , used   :: {-# UNPACK #-} !Int            -- used portion (inactive & active)
@@ -94,6 +95,11 @@ expandBuffer b = do let sz' = max (2 * (size b - used b)) (1024*1024)
                                 , mark   = if mark  b == maxBound then maxBound else mark  b - off b
                                 , mark2  = if mark2 b == maxBound then maxBound else mark2 b - off b }
 
+compressChunk' :: Int -> ForeignPtr CChar -> Int -> Int -> IO B.ByteString
+compressChunk' lv fptr off len =
+    withForeignPtr fptr $ \ptr ->
+    compressChunk lv (plusPtr ptr off) (fromIntegral len)
+
 -- We can flush anything that is between 'off' and the lower of 'mark'
 -- and 'used'.  When done, we bump 'off'.
 flush_blocks :: BgzfChan -> BB -> IO BB
@@ -101,14 +107,14 @@ flush_blocks qq bb
     | min (mark bb) (used bb) - off bb < maxBlockSize = return bb
 
     | otherwise = do
-        async (compressChunk 6 (buffer bb) (off bb) maxBlockSize)
+        async (compressChunk' 6 (buffer bb) (off bb) maxBlockSize)
             >>= atomically . writeTBQueue qq
         flush_blocks qq bb { off = off bb + maxBlockSize }
 
 final_flush :: BgzfChan -> BB -> IO ()
 final_flush qq bb = do
     when (used bb > off bb) $
-        async (compressChunk 6 (buffer bb) (off bb) (used bb - off bb))
+        async (compressChunk' 6 (buffer bb) (off bb) (used bb - off bb))
             >>= atomically . writeTBQueue qq
     async (return B.empty) >>= atomically . writeTBQueue qq
 
