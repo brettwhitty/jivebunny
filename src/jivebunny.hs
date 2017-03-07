@@ -325,6 +325,7 @@ options = [
     Option [ ] ["sample"]          (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
     Option [ ] ["components"]      (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
     Option [ ] ["nocontrol"]       (NoArg       set_no_control) "Suppress implied read groups for controls",
+    Option [ ] ["default-adapters"](NoArg      set_default_ads) "Look for the default adapters",
     Option "F" ["forward-adapter"] (ReqArg set_forward   "SEQ") "SEQ is a possible forward adapter",
     Option "R" ["reverse-adapter"] (ReqArg set_reverse   "SEQ") "SEQ is a possible reverse adapter",
     Option "v" ["verbose"]         (NoArg             set_loud) "Print more diagnostic messages",
@@ -344,8 +345,10 @@ options = [
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
     set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
 
-    set_forward   a c = readIO a >>= \x -> return $ c { cf_merge = Just $ first  (x:) $ fromMaybe ([],[]) $ cf_merge c }
-    set_reverse   a c = readIO a >>= \x -> return $ c { cf_merge = Just $ second (x:) $ fromMaybe ([],[]) $ cf_merge c }
+    with_merge    f c = return $ c { cf_merge = Just . f . fromMaybe ([],[]) $ cf_merge c }
+    set_forward   a c = readIO a >>= \x -> with_merge (first  (x:)) c
+    set_reverse   a c = readIO a >>= \x -> with_merge (second (x:)) c
+    set_default_ads c = with_merge ((++) default_fwd_adapters *** (++) default_rev_adapters) c
 
     usage = do pn <- getProgName
                putStrLn $ usageInfo ("Usage: " ++ pn ++ " [options] [bam-files]\n" ++
@@ -463,8 +466,7 @@ main = do
                                                 _                          -> b { b_exts = ex
                                                                                 , b_flag = b_flag b .&. complement flagFailsQC }) =$
                                progressNum "writing " 0x100000 info =$
-                               maybe (mergeTrimBam default_fwd_adapters default_rev_adapters)
-                                     (uncurry mergeTrimBam) cf_merge =$
+                               maybe (mapChunks id) (uncurry mergeTrimBam) cf_merge =$
                                out (add_pg hdr')
 
                         unlessQuiet cf_loudness $ do
