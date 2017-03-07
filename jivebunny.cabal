@@ -1,5 +1,5 @@
 name:                jivebunny
-version:             0.1.0.0
+version:             0.2
 synopsis:            demultiplexer for Illumina sequencing data
 -- description:         
 homepage:            https://bitbucket.org/ustenzel/jivebunny
@@ -32,7 +32,7 @@ executable jivebunny
   other-modules:       Index
   build-depends:       aeson                    >= 0.7 && < 1.1,
                        base                     >= 4.6 && < 4.10,
-                       biohazard                >= 0.6.10 && < 0.7,
+                       biohazard                >= 0.6.13 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        random                   >= 1.0 && < 1.2,
                        text                     >= 1.0 && < 2.0,
@@ -45,7 +45,7 @@ executable bcl2bam
   main-is:             bcl2bam.hs
   build-depends:       async                    >= 2.0 && < 2.2,
                        base                     >= 4.6 && < 4.10,
-                       biohazard                >= 0.6.10 && < 0.7,
+                       biohazard                >= 0.6.13 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        containers               >= 0.4.1 && < 0.6,
                        directory                >= 1.2 && < 2.0,
@@ -60,5 +60,6 @@ executable bcl2bam
   default-extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards,
                        ForeignFunctionInterface, PatternGuards
-  c-sources:           cbits/loops.c
-  other-modules:       BCL, BgzfBuilder, Locs
+  -- c-sources:           cbits/loops.c
+  -- other-modules:       BCL, BgzfBuilder, Locs
+  other-modules:       BCL, Locs

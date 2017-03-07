@@ -10,10 +10,9 @@
 -- restrict to a subset of lanes in this case.  The list of tiles can be
 -- overridden from the command line.
 
-import Bio.Iteratee.Bgzf                   ( bgzfEofMarker )
+import Bio.Iteratee
 import Bio.Prelude
-import Control.Concurrent.Async
-import Control.Concurrent.STM.TBQueue
+import Control.Exception                   ( IOException )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Utils
 import Foreign.Storable
@@ -31,7 +30,7 @@ import qualified Data.Set                   as S
 import qualified Data.Vector.Generic        as V
 
 import BCL
-import BgzfBuilder
+import Bio.Iteratee.Builder
 import Locs
 
 -- conversion of BCL/LOCS to BAM.  We go tile by tile, and for each tile
@@ -40,12 +39,12 @@ import Locs
 -- probably should.  We could also read the files for one tile while
 -- outputting another.)
 
-tileToBam :: LaneDef -> Tile -> BgzfTokens
+tileToBam :: LaneDef -> Tile -> Endo BgzfTokens
 tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..}
     -- XXX  For the time being, require the set of cycles to be a
     -- contiguous range starting at 1.
     | tile_cycles == [ 1 .. maximum tile_cycles ]
-        = foldr ($) TkEnd $ zipWith one_cluster [0..] (V.toList vlocs)
+        = Endo $ foldr (.) id $ zipWith one_cluster [0..] (V.toList vlocs)
     | otherwise = error $ "unhandled set of cycles: " ++ show tile_cycles
   where
     one_cluster i (px,py) =
@@ -82,7 +81,7 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
                 TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
                 TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) .
                 indexRead "XIZ" "YIZ" cycles_index_one .
-                indexRead "XJZ" "YJZ" cycles_index_two .
+                indexRead2 "XJZ" "YJZ" cycles_index_two revcom_index_two .
                 TkEndRecord
       where
         lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
@@ -101,6 +100,12 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
         indexRead k1 k2 (Just (u,v)) =
               TkString k1 . TkBclSpecial (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0 .
               TkString k2 . TkBclSpecial (BclArgs BclQualsAsc tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0
+
+        indexRead2  _  _   Nothing    _ = id
+        indexRead2 k1 k2 (Just (u,v)) False = indexRead k1 k2 (Just (u,v))
+        indexRead2 k1 k2 (Just (u,v)) True  =
+              TkString k1 . TkBclSpecial (BclArgs BclNucsAscRev  tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0 .
+              TkString k2 . TkBclSpecial (BclArgs BclQualsAscRev tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0
 
     !n_seq = let Just (ra,re) = cycles_read_one in fromIntegral $ re-ra+1
 
@@ -121,33 +126,22 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
     flagFailsQC      = 0x200
 
 
-tileToBamBrute :: LaneDef -> Tile -> BgzfChan -> BB -> IO BB
-tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..} out = go 0
+-- This is a somewhat hairier replacement for tileToBam.  It saves us
+-- something like 10% wall clock time globally... Not sure if that was
+-- worthwhile, but since it works, it stays in.
+tileToBamBrute :: LaneDef -> Tile -> Endo BgzfTokens
+tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..} =
+    foldMap go [0..V.length vlocs-1]
   where
-    go cnum bb
-        | cnum == V.length vlocs = return bb
-
-        | size bb - used bb > minsize =
-            withForeignPtr (buffer bb) (\p ->
-                go_fast bb cnum (p `plusPtr` used bb) (size bb - used bb) >>= \(cnum', p') ->
-                return (cnum', p' `minusPtr` p)) >>= \(cnum', use') ->
-            flush_blocks out bb { used = use' } >>= go cnum'
-
-        | otherwise =
-            expandBuffer bb >>= go cnum
-
-
-    go_fast bb !i pp !room
-        | i == V.length vlocs || room < minsize = return (i,pp)
-
-        | otherwise = do
-            p1 <- one_read flagsReadOne (fromJust cycles_read_one) pp
-            p2 <- case cycles_read_two of
-                        Nothing -> return p1
-                        Just cs -> one_read flagsReadTwo cs p1
-            go_fast bb (succ i) p2 (room - (p2 `minusPtr` pp))
-
+    go i =  Endo $ TkLowLevel minsize (\bb ->
+                    withForeignPtr (buffer bb) (\pp -> do
+                        p1 <- one_read flagsReadOne (fromJust cycles_read_one) (pp `plusPtr` used bb)
+                        p2 <- case cycles_read_two of
+                                    Nothing -> return p1
+                                    Just cs -> one_read flagsReadTwo cs p1
+                        return bb { used = p2 `minusPtr` pp }))
       where
+        one_read :: Word32 -> (Int,Int) -> Ptr Word8 -> IO (Ptr Word8)
         one_read flags (u,v) p = do
             pokeByteOff p  4 (maxBound :: Word32)                               -- rname
             pokeByteOff p  8 (maxBound :: Word32)                               -- pos
@@ -171,8 +165,10 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
             p6 <- plusPtr p5 <$> loop_bcl_special p5 (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
             p7 <- plusPtr p6 <$> loop_bcl_special p6 (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
 
-            p8 <- indexRead p7 "XIZ" "YIZ" cycles_index_one
-            p9 <- indexRead p8 "XJZ" "YJZ" cycles_index_two
+            p8 <- indexRead BclNucsAsc BclQualsAsc p7 "XIZ" "YIZ" cycles_index_one
+            p9 <- if revcom_index_two
+                  then indexRead BclNucsAscRev BclQualsAscRev p8 "XJZ" "YJZ" cycles_index_two
+                  else indexRead BclNucsAsc    BclQualsAsc    p8 "XJZ" "YJZ" cycles_index_two
             pokeByteOff p 0 (fromIntegral $ (p9 `minusPtr` p) - 4 :: Word32)
             return p9
 
@@ -188,15 +184,16 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
                | x < 1000000 = 6
                | otherwise    = 7
 
-        indexRead p'  _  _   Nothing    = return p'
-        indexRead p' k1 k2 (Just (u,v)) = do
+        indexRead :: BclSpecialType -> BclSpecialType -> Ptr Word8 -> Bytes -> Bytes -> Maybe (Int,Int) -> IO (Ptr Word8)
+        indexRead  _   _  p'  _  _   Nothing    = return p'
+        indexRead tp1 tp2 p' k1 k2 (Just (u,v)) = do
             B.unsafeUseAsCString k1 $ \q -> copyBytes p' (castPtr q) (B.length k1)
-            l1 <- loop_bcl_special (p' `plusPtr` B.length k1) (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i)
+            l1 <- loop_bcl_special (p' `plusPtr` B.length k1) (BclArgs  tp1 tile_bcls tile_stride (u-1) (v-1) i)
             let pp1 = p' `plusPtr` (B.length k1 + l1 + 1)
             pokeByteOff pp1 (-1) (0 :: Word8)
 
             B.unsafeUseAsCString k2 $ \q -> copyBytes pp1 (castPtr q) (B.length k2)
-            l2 <- loop_bcl_special (pp1 `plusPtr` B.length k2) (BclArgs BclQualsAsc tile_bcls tile_stride (u-1) (v-1) i)
+            l2 <- loop_bcl_special (pp1 `plusPtr` B.length k2) (BclArgs tp2 tile_bcls tile_stride (u-1) (v-1) i)
             let pp2 = pp1 `plusPtr` (B.length k2 + l2 + 1)
             pokeByteOff pp2 (-1) (0 :: Word8)
             return pp2
@@ -248,6 +245,9 @@ data LaneDef = LaneDef {
     -- | Cycles in the second index read, if present.
     cycles_index_two :: Maybe (Int,Int),
 
+    -- | Shall I revcom the second index sequence?
+    revcom_index_two :: Bool,
+
     -- | List of basenames, one for each tile.
     tiles :: Maybe [String] }
   deriving Show
@@ -262,7 +262,11 @@ default_lanedef ln = LaneDef
     , cycles_read_two  = Nothing
     , cycles_index_one = Nothing
     , cycles_index_two = Nothing
+    , revcom_index_two = unknown_revcom_status
     , tiles            = Nothing }
+
+unknown_revcom_status :: Bool
+unknown_revcom_status = error "can't tell if index two is reverse-complemented"
 
 data Cfg = Cfg
         { cfg_output :: (Handle -> IO ()) -> IO ()
@@ -290,6 +294,8 @@ options = [
     Option "R" ["read2"]                (ReqArg set_read2    "RANGE") "Read 2 comprises cycles in RANGE",
     Option "i" ["index1"]               (ReqArg set_index1   "RANGE") "Index 1 comprises cycles in RANGE",
     Option "I" ["index2"]               (ReqArg set_index2   "RANGE") "Index 2 comprises cycles in RANGE",
+    Option [ ] ["mpi-protocol"]         (NoArg         set_norevcom2) "Do not reverse-complement index read two",
+    Option [ ] ["nextera-protocol"]     (NoArg           set_revcom2) "Reverse-complement index read two",
     Option "v" ["verbose"]              (NoArg           set_verbose) "Enable progress reporting",
     Option "V" ["version"]              (NoArg          disp_version) "Display program version and exit",
     Option "h?"["help","usage"]         (NoArg            disp_usage) "Display this usage information and exit" ]
@@ -304,6 +310,9 @@ options = [
     set_read2     a = override . map $ \l -> l { cycles_read_two  =        readWith pmrange a }
     set_index1    a = override . map $ \l -> l { cycles_index_one =        readWith pmrange a }
     set_index2    a = override . map $ \l -> l { cycles_index_two =        readWith pmrange a }
+
+    set_revcom2     = override . map $ \l -> l { revcom_index_two =  True }
+    set_norevcom2   = override . map $ \l -> l { revcom_index_two = False }
 
     set_output  a c = return $ c { cfg_output = \k -> withFile (a++"#") WriteMode k >> renameFile (a++"#") a }
     set_verbose   c = return $ c { cfg_report = hPutStrLn stderr }
@@ -393,6 +402,7 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
                             r1:_    -> (Just r1, Nothing)
                             _       -> (Nothing, Nothing)
 
+                  revcom_index_two <- is_nextera_recipe rundir
                   return $ Just LaneDef{ tiles = Just ts, .. }
 
       else return Nothing
@@ -417,13 +427,13 @@ listCycles bcls = mapMaybe get_cycle <$> getDirectoryContents bcls
 
 
 -- For each tile, read locs and all the bcls.  Run tileToBam and emit.
-bamFromBcl :: (String -> IO ()) -> BgzfChan -> BB -> LaneDef -> IO BB
-bamFromBcl report chan bb0 ld@LaneDef{..} =
-    foldM (\bb fn -> do report fn
+bamFromBcl :: (String -> IO ()) -> LaneDef -> Enumerator (Endo BgzfTokens) IO b
+bamFromBcl report ld@LaneDef{..} it0 =
+    foldM (\it fn -> do report fn
                         tile <- readTile fn path_locs path_bcl [1..ce]
-                        tileToBamBrute ld tile chan bb
-                        -- encodeBgzf chan bb (tileToBam ld tile)
-          ) bb0 (maybe [] id tiles)
+                        -- enumPure1Chunk (tileToBam ld tile) it
+                        enumPure1Chunk (tileToBamBrute ld tile) it
+          ) it0 (maybe [] id tiles)
   where
     !ce = maybe id (max . snd) cycles_index_two $
           maybe id (max . snd) cycles_index_one $
@@ -453,19 +463,10 @@ main = do
 
     mapM_ (cfg_report . show) lanedefs
 
-    chan <- atomically $ newTBQueue 16
-    reader <- async $ do bb <- newBuffer
-                         bb' <- encodeBgzf chan bb =<< encodeHeader
-                         bb'' <- foldM (bamFromBcl cfg_report chan) bb' lanedefs
-                         final_flush chan bb''
-
     cfg_output $ \hdl ->
-        let go = do pid <- atomically $ readTBQueue chan
-                    str <- wait pid
-                    if B.null str then B.hPut hdl bgzfEofMarker
-                                  else B.hPut hdl str >> go
-        in go
-    wait reader -- should already be dead?
+        (\o -> encodeHeader >>= flip enumPure1Chunk o) >=>
+        foldr ((>=>) . bamFromBcl cfg_report) run lanedefs $
+            joinI $ encodeBgzf 6 $ mapChunksM_ (B.hPut hdl)
 
 
 -- Look for a useable XML file, either RunInfo.xml, or RunParameters.xml.
@@ -497,8 +498,42 @@ toReadDef elt = do
     rbool (Just "y") = True
     rbool          _ = False
 
+-- We have to allow for index2 to be reverse-complemented (Nextera
+-- style) or not (MPI style).  There is obviously an option to override
+-- it, and a way to detect it for a given run folder:  Check for some
+-- Recipe/*.xml that doesn't match Recipe/*RunState*.  If this recipe
+-- has
+-- Recipe/Protocol/ChemistryRef[ChemistryName="Index2FirstBaseDark"], it
+-- is a Nextera recipe.  If it has
+-- Recipe/Protocol/ChemistryRef[ChemistryName="Index2Preparation"], it
+-- is an MPI recipe.  Else we still don't know.  (We could infer it from
+-- the order of the reads, but I consider this too fragile.)
 
-encodeHeader :: IO BgzfTokens
+is_nextera_recipe :: FilePath -> IO Bool
+is_nextera_recipe rundir =
+    do fs <- filter (not . ("runstate" `isInfixOf`) . map toLower) .
+             filter (".xml" `isSuffixOf`) <$>
+             getDirectoryContents (rundir </> "Recipe")
+       case fs of
+           [  ] -> return unknown_revcom_status
+           fp:_ -> foldr match_chem_name unknown_revcom_status .
+                   map (map toLower) .
+                   mapMaybe (findAttr     (unqual "ChemistryName")) .
+                   concatMap (findChildren (unqual "ChemistryRef")) .
+                   concatMap (findChildren (unqual "Protocol")) .
+                   concatMap (findElements (unqual "Recipe")) .
+                   maybeToList . parseXMLDoc <$> B.readFile (rundir </> "Recipe" </> fp)
+    `catch` discard_io_exception
+  where
+    match_chem_name "index2firstbasedark" = const True
+    match_chem_name "index2preparation"   = const False
+    match_chem_name _                     = id
+
+    discard_io_exception :: IOException -> IO Bool
+    discard_io_exception _ = return unknown_revcom_status
+
+
+encodeHeader :: IO (Endo BgzfTokens)
 encodeHeader = do
     pn <- getProgName
     as <- getArgs
@@ -506,6 +541,6 @@ encodeHeader = do
     let hdr = "@HD\tVN:1.0\n@PG\tID:" ++ pn ++ "\tPN:" ++ pn ++
               "\tCL:" ++ unwords as ++ "\tVN:" ++ showVersion version ++ "\n"
 
-    return $ TkString "BAM\1" $ TkSetMark               $ TkString (fromString hdr)
-           $ TkEndRecord      $ TkWord32 0 {- n_refs -} $ TkEnd
+    return . Endo $ TkString "BAM\1" . TkSetMark               . TkString (fromString hdr)
+                  . TkEndRecord      . TkWord32 0 {- n_refs -}
 
