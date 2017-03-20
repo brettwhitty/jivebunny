@@ -92,7 +92,7 @@ gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
            mapStream (fromTags "XI" "YI" &&& fromTags "XJ" "YJ") =$ k num
 
 
-subsam2vector :: (MonadIO m, ListLike s a, Nullable s, VG.Vector v a) => Int -> Iteratee s m (v a)
+subsam2vector :: (MonadIO m, VG.Vector v a) => Int -> Iteratee [a] m (v a)
 subsam2vector sz = liftIO (VGM.new sz) >>= go 0
   where
     go !i !mv = tryHead >>= \x -> case x of

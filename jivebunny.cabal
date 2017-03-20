@@ -60,6 +60,4 @@ executable bcl2bam
   default-extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards,
                        ForeignFunctionInterface, PatternGuards
-  -- c-sources:           cbits/loops.c
-  -- other-modules:       BCL, BgzfBuilder, Locs
   other-modules:       BCL, Locs
