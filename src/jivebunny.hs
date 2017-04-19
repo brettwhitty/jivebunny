@@ -466,7 +466,7 @@ main = do
                                                 _                          -> b { b_exts = ex
                                                                                 , b_flag = b_flag b .&. complement flagFailsQC }) =$
                                progressNum "writing " 0x100000 info =$
-                               maybe (mapChunks id) (uncurry mergeTrimBam) cf_merge =$
+                               maybe (mapChunks id) (uncurry $ mergeTrimBam 20 200) cf_merge =$
                                out (add_pg hdr')
 
                         unlessQuiet cf_loudness $ do
