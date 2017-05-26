@@ -10,13 +10,13 @@
 -- restrict to a subset of lanes in this case.  The list of tiles can be
 -- overridden from the command line.
 
+import Bio.Bam.Header
+import Bio.Bam.Trim
 import Bio.Iteratee
+import Bio.Iteratee.Builder
 import Bio.Prelude
 import Control.Exception                   ( IOException )
-import Foreign.ForeignPtr
-import Foreign.Marshal.Utils
-import Foreign.Storable
-import Foreign.Ptr
+import Foreign.Marshal.Utils               ( copyBytes )
 import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
 import System.Directory
@@ -24,13 +24,14 @@ import System.FilePath
 import System.IO                           ( hPutStrLn, stderr, stdout, withFile, IOMode(..) )
 import Text.XML.Light               hiding ( Text )
 
-import qualified Data.ByteString            as B
-import qualified Data.ByteString.Unsafe     as B ( unsafeUseAsCString )
-import qualified Data.Set                   as S
-import qualified Data.Vector.Generic        as V
+import qualified Data.ByteString              as B
+import qualified Data.ByteString.Unsafe       as B ( unsafeUseAsCString )
+import qualified Data.Set                     as S
+import qualified Data.Vector.Generic          as V
+import qualified Data.Vector.Storable         as W
+import qualified Data.Vector.Storable.Mutable as WM
 
 import BCL
-import Bio.Iteratee.Builder
 import Locs
 
 -- conversion of BCL/LOCS to BAM.  We go tile by tile, and for each tile
@@ -39,12 +40,12 @@ import Locs
 -- probably should.  We could also read the files for one tile while
 -- outputting another.)
 
-tileToBam :: LaneDef -> Tile -> Endo BgzfTokens
+tileToBam :: LaneDef -> Tile -> [ Endo BgzfTokens ]
 tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..}
     -- XXX  For the time being, require the set of cycles to be a
     -- contiguous range starting at 1.
     | tile_cycles == [ 1 .. maximum tile_cycles ]
-        = Endo $ foldr (.) id $ zipWith one_cluster [0..] (V.toList vlocs)
+        = map Endo $ zipWith one_cluster [0..] (V.toList vlocs)
     | otherwise = error $ "unhandled set of cycles: " ++ show tile_cycles
   where
     one_cluster i (px,py) =
@@ -109,40 +110,86 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..
 
     !n_seq = let Just (ra,re) = cycles_read_one in fromIntegral $ re-ra+1
 
-    !flagsSingle  = flagUnmapped
-    !flagsReadTwo = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
+    !flagsSingle  = fromIntegral $ flagUnmapped
+    !flagsReadTwo = fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
-    !flagsReadOne = case cycles_read_two of
+    !flagsReadOne = fromIntegral $ case cycles_read_two of
             Just  _ -> flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
             Nothing -> flagsSingle
 
-    get_flag j = case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
+    get_flag j = fromIntegral $ case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
 
-    flagPaired       = 0x1
-    flagUnmapped     = 0x4
-    flagMateUnmapped = 0x8
-    flagFirstMate    = 0x40
-    flagSecondMate   = 0x80
-    flagFailsQC      = 0x200
+    -- flagPaired       = 0x1
+    -- flagUnmapped     = 0x4
+    -- flagMateUnmapped = 0x8
+    -- flagFirstMate    = 0x40
+    -- flagSecondMate   = 0x80
+    -- flagFailsQC      = 0x200
 
 
 -- This is a somewhat hairier replacement for tileToBam.  It saves us
--- something like 10% wall clock time globally... Not sure if that was
--- worthwhile, but since it works, it stays in.
-tileToBamBrute :: LaneDef -> Tile -> Endo BgzfTokens
+-- something like 10..33% wall clock time globally... That's probably
+-- worth the trouble.
+tileToBamBrute :: LaneDef -> Tile -> [ Endo BgzfTokens ]
 tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..} =
-    foldMap go [0..V.length vlocs-1]
+    map go [0..V.length vlocs-1]
   where
-    go i =  Endo $ TkLowLevel minsize (\bb ->
-                    withForeignPtr (buffer bb) (\pp -> do
-                        p1 <- one_read flagsReadOne (fromJust cycles_read_one) (pp `plusPtr` used bb)
-                        p2 <- case cycles_read_two of
-                                    Nothing -> return p1
-                                    Just cs -> one_read flagsReadTwo cs p1
-                        return bb { used = p2 `minusPtr` pp }))
+    go i = Endo $ TkLowLevel minsize $ \bb ->
+           withForeignPtr (buffer bb) $ \pp -> do
+           let Just (u,v) = cycles_read_one
+           rd1 <- do vv <- WM.unsafeNew (v-u+1)
+                     _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                BclArgs BclNucsWide tile_bcls tile_stride (u-1) (v-1) i
+                     W.unsafeFreeze vv
+           qs1 <- do vv <- WM.unsafeNew (v-u+1)
+                     _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i
+                     W.unsafeFreeze vv
+
+           pz <- case cycles_read_two of
+                Nothing ->
+                    (case find_trim default_fwd_adapters rd1 qs1 of
+                        (mlen, qual1, qual2)
+                            | u > v                       -> r1  0
+                            | mlen == 0 && qual1 >= highq -> return
+                            | qual1 < lowq                -> r1  0
+                            | qual1 >= highq              -> r1t 0
+                            | otherwise                   -> r1 eflagAlternative >=> r1t eflagAlternative
+                          where
+                            r1  = one_read flagsReadOne (u,v)
+                            r1t = one_read flagsReadOne (u,u+mlen-1)
+                    ) (pp `plusPtr` used bb)
+
+                Just (u',v') -> do
+                    rd2 <- do vv <- WM.unsafeNew (v'-u'+1)
+                              _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                         BclArgs BclNucsWide tile_bcls tile_stride (u'-1) (v'-1) i
+                              W.unsafeFreeze vv
+                    qs2 <- do vv <- WM.unsafeNew (v'-u'+1)
+                              _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                         BclArgs BclQualsBin tile_bcls tile_stride (u'-1) (v'-1) i
+                              W.unsafeFreeze vv
+                    (case find_merge default_fwd_adapters default_rev_adapters rd1 qs1 rd2 qs2 of
+                        (mlen, qual1, qual2)
+                             | u > v && u' > v'                     -> r1 0 >=> r2 0
+                             | qual1 < lowq                         -> r1 0 >=> r2 0
+                             | qual1 >= highq && mlen == 0          -> return
+                             | qual1 >= highq                       -> rm 0
+                             | mlen < v-u-21 || mlen < v'-u'-21     -> rm 0
+                             | otherwise -> r1 eflagAlternative >=> r2 eflagAlternative >=> rm eflagAlternative
+
+                          where
+                            r1 = one_read flagsReadOne (u,v)
+                            r2 = one_read flagsReadTwo (u',v')
+                            rm = undefined -- XXX
+                        ) (pp `plusPtr` used bb)
+
+           if pz `minusPtr` pp - used bb <= minsize
+                then return bb { used = pz `minusPtr` pp }
+                else error "Oh noes, minsize was too optimistic!"
       where
-        one_read :: Word32 -> (Int,Int) -> Ptr Word8 -> IO (Ptr Word8)
-        one_read flags (u,v) p = do
+        one_read :: Word32 -> (Int,Int) -> Int -> Ptr Word8 -> IO (Ptr Word8)
+        one_read flags (u,v) ff p = do
             pokeByteOff p  4 (maxBound :: Word32)                               -- rname
             pokeByteOff p  8 (maxBound :: Word32)                               -- pos
             pokeByteOff p 12 (0x12480000 .|. fromIntegral lqname :: Word32)     -- lqname, mapq, bin
@@ -169,8 +216,14 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
             p9 <- if revcom_index_two
                   then indexRead BclNucsAscRev BclQualsAscRev p8 "XJZ" "YJZ" cycles_index_two
                   else indexRead BclNucsAsc    BclQualsAsc    p8 "XJZ" "YJZ" cycles_index_two
-            pokeByteOff p 0 (fromIntegral $ (p9 `minusPtr` p) - 4 :: Word32)
-            return p9
+            p10 <- if ff /= 0 then do pokeByteOff p9 0 (c2w 'F')
+                                      pokeByteOff p9 1 (c2w 'F')
+                                      pokeByteOff p9 2 (c2w 'C')
+                                      pokeByteOff p9 3 (fromIntegral ff :: Word8)
+                                      return $ p9 `plusPtr` 4
+                              else return p9
+            pokeByteOff p 0 (fromIntegral $ (p10 `minusPtr` p) - 4 :: Word32)
+            return p10
 
 
         (px,py) = vlocs V.! i
@@ -201,23 +254,24 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
 
     !minsize = 2 * length tile_cycles + 2 * B.length experiment + 256
 
-    !flagsSingle  = flagUnmapped
-    !flagsReadTwo = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
+    !flagsSingle  = fromIntegral $ flagUnmapped
+    !flagsReadTwo = fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
-    !flagsReadOne = case cycles_read_two of
+    !flagsReadOne = fromIntegral $ case cycles_read_two of
             Just  _ -> flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
             Nothing -> flagsSingle
 
-    get_flag j = case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
+    get_flag j = fromIntegral $ case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
 
-    flagPaired       = 0x1
-    flagUnmapped     = 0x4
-    flagMateUnmapped = 0x8
-    flagFirstMate    = 0x40
-    flagSecondMate   = 0x80
-    flagFailsQC      = 0x200
+    -- flagPaired       = 0x1
+    -- flagUnmapped     = 0x4
+    -- flagMateUnmapped = 0x8
+    -- flagFirstMate    = 0x40
+    -- flagSecondMate   = 0x80
+    -- flagFailsQC      = 0x200
 
-
+    lowq  =  20 -- XXX
+    highq = 200 -- XXX
 
 
 -- | Definition of a lane to be processed.  Includes paths, read
@@ -432,7 +486,7 @@ bamFromBcl report ld@LaneDef{..} it0 =
     foldM (\it fn -> do report fn
                         tile <- readTile fn path_locs path_bcl [1..ce]
                         -- enumPure1Chunk (tileToBam ld tile) it
-                        enumPure1Chunk (tileToBamBrute ld tile) it
+                        enumPure1Chunk (fold $ tileToBamBrute ld tile) it
           ) it0 (maybe [] id tiles)
   where
     !ce = maybe id (max . snd) cycles_index_two $
@@ -521,12 +575,14 @@ is_nextera_recipe rundir =
                    mapMaybe (findAttr     (unqual "ChemistryName")) .
                    concatMap (findChildren (unqual "ChemistryRef")) .
                    concatMap (findChildren (unqual "Protocol")) .
-                   concatMap (findElements (unqual "Recipe")) .
+                   concatMap (liftA2 (++) (findElements (unqual "Recipe"))
+                                          (findElements (unqual "RecipeFile"))) .
                    maybeToList . parseXMLDoc <$> B.readFile (rundir </> "Recipe" </> fp)
     `catch` discard_io_exception
   where
     match_chem_name "index2firstbasedark" = const True
     match_chem_name "index2preparation"   = const False
+    match_chem_name "indexpreparation-i5" = const False
     match_chem_name _                     = id
 
     discard_io_exception :: IOException -> IO Bool

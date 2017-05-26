@@ -1,14 +1,11 @@
 name:                jivebunny
 version:             0.2
 synopsis:            demultiplexer for Illumina sequencing data
--- description:         
 homepage:            https://bitbucket.org/ustenzel/jivebunny
 license:             GPL-3
 license-file:        LICENSE
 author:              Udo Stenzel
 maintainer:          udo.stenzel@eva.mpg.de
--- copyright:           
--- category:            
 build-type:          Simple
 extra-source-files:  ChangeLog.md
                      man/man1/bcl2bam.1
@@ -32,7 +29,7 @@ executable jivebunny
   other-modules:       Index
   build-depends:       aeson                    >= 0.7 && < 1.1,
                        base                     >= 4.6 && < 4.10,
-                       biohazard                >= 0.6.14 && < 0.7,
+                       biohazard                >= 0.6.15 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        random                   >= 1.0 && < 1.2,
                        text                     >= 1.0 && < 2.0,
@@ -45,7 +42,7 @@ executable bcl2bam
   main-is:             bcl2bam.hs
   build-depends:       async                    >= 2.0 && < 2.2,
                        base                     >= 4.6 && < 4.10,
-                       biohazard                >= 0.6.14 && < 0.7,
+                       biohazard                >= 0.6.15 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        containers               >= 0.4.1 && < 0.6,
                        directory                >= 1.2 && < 2.0,

@@ -25,8 +25,6 @@ import Bio.Util.Numeric                 ( showNum )
 import Data.Aeson
 import Foreign.C.Types
 import Foreign.Marshal.Alloc
-import Foreign.Ptr
-import Foreign.Storable
 import Paths_jivebunny                  ( version, getDataFileName )
 import System.Console.GetOpt
 import System.Random                    ( randomRIO )
