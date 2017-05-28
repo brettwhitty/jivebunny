@@ -16,6 +16,7 @@ import Bio.Iteratee
 import Bio.Iteratee.Builder
 import Bio.Prelude
 import Control.Exception                   ( IOException )
+import Control.Monad.Trans.State.Strict
 import Foreign.Marshal.Utils               ( copyBytes )
 import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
@@ -146,84 +147,91 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
                                 BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i
                      W.unsafeFreeze vv
 
-           pz <- case cycles_read_two of
+           pz <- flip execStateT (pp `plusPtr` used bb) $ case cycles_read_two of
                 Nothing ->
-                    (case find_trim default_fwd_adapters rd1 qs1 of
+                    case find_trim default_fwd_adapters rd1 qs1 of
                         (mlen, qual1, qual2)
                             | u > v                       -> r1  0
-                            | mlen == 0 && qual1 >= highq -> return
+                            | mlen == 0 && qual1 >= highq -> return ()
                             | qual1 < lowq                -> r1  0
                             | qual1 >= highq              -> r1t 0
-                            | otherwise                   -> r1 eflagAlternative >=> r1t eflagAlternative
+                            | otherwise                   -> r1 eflagAlternative >> r1t eflagAlternative
                           where
                             r1  = one_read flagsReadOne (u,v)
                             r1t = one_read flagsReadOne (u,u+mlen-1)
-                    ) (pp `plusPtr` used bb)
 
                 Just (u',v') -> do
-                    rd2 <- do vv <- WM.unsafeNew (v'-u'+1)
-                              _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
-                                         BclArgs BclNucsWide tile_bcls tile_stride (u'-1) (v'-1) i
-                              W.unsafeFreeze vv
-                    qs2 <- do vv <- WM.unsafeNew (v'-u'+1)
-                              _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
-                                         BclArgs BclQualsBin tile_bcls tile_stride (u'-1) (v'-1) i
-                              W.unsafeFreeze vv
-                    (case find_merge default_fwd_adapters default_rev_adapters rd1 qs1 rd2 qs2 of
+                    rd2 <- lift $ do vv <- WM.unsafeNew (v'-u'+1)
+                                     _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                                BclArgs BclNucsWide tile_bcls tile_stride (u'-1) (v'-1) i
+                                     W.unsafeFreeze vv
+                    qs2 <- lift $ do vv <- WM.unsafeNew (v'-u'+1)
+                                     _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                                BclArgs BclQualsBin tile_bcls tile_stride (u'-1) (v'-1) i
+                                     W.unsafeFreeze vv
+                    case find_merge default_fwd_adapters default_rev_adapters rd1 qs1 rd2 qs2 of
                         (mlen, qual1, qual2)
-                             | u > v && u' > v'                     -> r1 0 >=> r2 0
-                             | qual1 < lowq                         -> r1 0 >=> r2 0
-                             | qual1 >= highq && mlen == 0          -> return
+                             | u > v && u' > v'                     -> r1 0 >> r2 0
+                             | qual1 < lowq                         -> r1 0 >> r2 0
+                             | qual1 >= highq && mlen == 0          -> return ()
                              | qual1 >= highq                       -> rm 0
                              | mlen < v-u-21 || mlen < v'-u'-21     -> rm 0
-                             | otherwise -> r1 eflagAlternative >=> r2 eflagAlternative >=> rm eflagAlternative
+                             | otherwise -> r1 eflagAlternative >> r2 eflagAlternative >> rm eflagAlternative
 
                           where
                             r1 = one_read flagsReadOne (u,v)
                             r2 = one_read flagsReadTwo (u',v')
                             rm = undefined -- XXX
-                        ) (pp `plusPtr` used bb)
 
            if pz `minusPtr` pp - used bb <= minsize
                 then return bb { used = pz `minusPtr` pp }
                 else error "Oh noes, minsize was too optimistic!"
       where
-        one_read :: Word32 -> (Int,Int) -> Int -> Ptr Word8 -> IO (Ptr Word8)
-        one_read flags (u,v) ff p = do
-            pokeByteOff p  4 (maxBound :: Word32)                               -- rname
-            pokeByteOff p  8 (maxBound :: Word32)                               -- pos
-            pokeByteOff p 12 (0x12480000 .|. fromIntegral lqname :: Word32)     -- lqname, mapq, bin
-            pokeByteOff p 16 (shiftL (flags .|. get_flag i) 16 :: Word32)       -- n_cigar, flag
-            pokeByteOff p 20 (fromIntegral (v-u+1) :: Word32)                   -- n_seq
-            pokeByteOff p 24 (maxBound :: Word32)                               -- mrnm
-            pokeByteOff p 28 (maxBound :: Word32)                               -- mpos
-            pokeByteOff p 32 (0 :: Word32)                                      -- isize
+        w8 :: Word8 -> StateT (Ptr Word8) IO ()
+        w8 w = StateT $ \p -> ((),p `plusPtr` 1) <$ pokeByteOff p 0 w
+
+        w32 :: Word32 -> StateT (Ptr Word8) IO ()
+        w32 w = StateT $ \p -> ((),p `plusPtr` 4) <$ pokeByteOff p 0 w
+
+        wrap f a = StateT $ \p -> f p a >>= \l -> return ((), p `plusPtr` l)
+
+        one_read :: Word32 -> (Int,Int) -> Int -> StateT (Ptr Word8) IO ()
+        one_read flags (u,v) ff = do
+            p0 <- get
+            modify (`plusPtr` 4)
+            w32 maxBound                                                        -- rname
+            w32 maxBound                                                        -- pos
+            w32 (0x12480000 .|. fromIntegral lqname)                            -- lqname, mapq, bin
+            w32 (shiftL (flags .|. get_flag i) 16)                              -- n_cigar, flag
+            w32 (fromIntegral (v-u+1))                                          -- n_seq
+            w32 maxBound                                                        -- mrnm
+            w32 maxBound                                                        -- mpos
+            w32 0                                                               -- isize
+
             let ln = B.length experiment
-            B.unsafeUseAsCString experiment $ \q ->
-                copyBytes (p `plusPtr` 36) (castPtr q) ln
-            let p0 = p `plusPtr` (36+ln)
-            p1 <- plusPtr p0 <$> int_loop p0 lane_number
-            p2 <- plusPtr p1 <$> int_loop p1 tile_nbr
-            p3 <- plusPtr p2 <$> int_loop p2 (fromIntegral px)
-            p4 <- plusPtr p3 <$> int_loop p3 (fromIntegral py)
-            pokeByteOff p4 0 (0 :: Word8)
+            StateT $ \p -> B.unsafeUseAsCString experiment $ \q ->
+                ((),p `plusPtr` ln) <$ copyBytes p (castPtr q) ln
 
-            let p5 = plusPtr p4 1
-            p6 <- plusPtr p5 <$> loop_bcl_special p5 (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
-            p7 <- plusPtr p6 <$> loop_bcl_special p6 (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
+            wrap int_loop lane_number
+            wrap int_loop tile_nbr
+            wrap int_loop (fromIntegral px)
+            wrap int_loop (fromIntegral py)
+            w8 0
 
-            p8 <- indexRead BclNucsAsc BclQualsAsc p7 "XIZ" "YIZ" cycles_index_one
-            p9 <- if revcom_index_two
-                  then indexRead BclNucsAscRev BclQualsAscRev p8 "XJZ" "YJZ" cycles_index_two
-                  else indexRead BclNucsAsc    BclQualsAsc    p8 "XJZ" "YJZ" cycles_index_two
-            p10 <- if ff /= 0 then do pokeByteOff p9 0 (c2w 'F')
-                                      pokeByteOff p9 1 (c2w 'F')
-                                      pokeByteOff p9 2 (c2w 'C')
-                                      pokeByteOff p9 3 (fromIntegral ff :: Word8)
-                                      return $ p9 `plusPtr` 4
-                              else return p9
-            pokeByteOff p 0 (fromIntegral $ (p10 `minusPtr` p) - 4 :: Word32)
-            return p10
+            wrap loop_bcl_special (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
+            wrap loop_bcl_special (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
+
+            indexRead BclNucsAsc BclQualsAsc "XIZ" "YIZ" cycles_index_one
+            if revcom_index_two
+                  then indexRead BclNucsAscRev BclQualsAscRev "XJZ" "YJZ" cycles_index_two
+                  else indexRead BclNucsAsc    BclQualsAsc    "XJZ" "YJZ" cycles_index_two
+
+            when (ff /= 0) $ do w8 (c2w 'F')
+                                w8 (c2w 'F')
+                                w8 (c2w 'C')
+                                w8 (fromIntegral ff)
+            StateT $ \pe ->
+                ((),pe) <$ pokeByteOff p0 0 (fromIntegral $ (pe `minusPtr` p0) - 4 :: Word32)
 
 
         (px,py) = vlocs V.! i
@@ -237,9 +245,9 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
                | x < 1000000 = 6
                | otherwise    = 7
 
-        indexRead :: BclSpecialType -> BclSpecialType -> Ptr Word8 -> Bytes -> Bytes -> Maybe (Int,Int) -> IO (Ptr Word8)
-        indexRead  _   _  p'  _  _   Nothing    = return p'
-        indexRead tp1 tp2 p' k1 k2 (Just (u,v)) = do
+        indexRead :: BclSpecialType -> BclSpecialType -> Bytes -> Bytes -> Maybe (Int,Int) -> StateT (Ptr Word8) IO ()
+        indexRead  _   _   _  _   Nothing    = StateT $ \p' -> return ((),p')
+        indexRead tp1 tp2 k1 k2 (Just (u,v)) = StateT $ \p' -> do
             B.unsafeUseAsCString k1 $ \q -> copyBytes p' (castPtr q) (B.length k1)
             l1 <- loop_bcl_special (p' `plusPtr` B.length k1) (BclArgs  tp1 tile_bcls tile_stride (u-1) (v-1) i)
             let pp1 = p' `plusPtr` (B.length k1 + l1 + 1)
@@ -249,7 +257,7 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
             l2 <- loop_bcl_special (pp1 `plusPtr` B.length k2) (BclArgs tp2 tile_bcls tile_stride (u-1) (v-1) i)
             let pp2 = pp1 `plusPtr` (B.length k2 + l2 + 1)
             pokeByteOff pp2 (-1) (0 :: Word8)
-            return pp2
+            return ((),pp2)
 
 
     !minsize = 2 * length tile_cycles + 2 * B.length experiment + 256
