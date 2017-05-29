@@ -35,130 +35,52 @@ import qualified Data.Vector.Storable.Mutable as WM
 import BCL
 import Locs
 
--- conversion of BCL/LOCS to BAM.  We go tile by tile, and for each tile
--- we need a bunch of BCLs (one per cycle) and a LOCS.  (XXX Note on
--- parallelization:  we could read the many files in parallel, and we
--- probably should.  We could also read the files for one tile while
--- outputting another.)
+type MergeConf = (Int, Maybe Int)
 
-tileToBam :: LaneDef -> Tile -> [ Endo BgzfTokens ]
-tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..}
-    -- XXX  For the time being, require the set of cycles to be a
-    -- contiguous range starting at 1.
-    | tile_cycles == [ 1 .. maximum tile_cycles ]
-        = map Endo $ zipWith one_cluster [0..] (V.toList vlocs)
-    | otherwise = error $ "unhandled set of cycles: " ++ show tile_cycles
-  where
-    one_cluster i (px,py) =
-        TkSetMark .
-        TkWord32 maxBound .                                         -- rname
-        TkWord32 maxBound .                                         -- pos
-        TkWord32 (0x12480000 .|. fromIntegral lqname) .             -- lqname, mapq, bin
-        TkWord32 (shiftL (flagsReadOne .|. get_flag i) 16) .        -- n_cigar, flag
-        TkWord32 n_seq .                                            -- n_seq
-        TkWord32 maxBound .                                         -- mrnm
-        TkWord32 maxBound .                                         -- mpos
-        TkWord32 0 .                                                -- isize
-        qname .                                                     -- qname
-        ( let Just (u,v) = cycles_read_one
-          in TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
-             TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) ) .
-        indexRead "XIZ" "YIZ" cycles_index_one .
-        indexRead "XJZ" "YJZ" cycles_index_two .
-        TkEndRecord .
-
-        case cycles_read_two of
-            Nothing    -> id
-            Just (u,v) ->
-                TkSetMark .
-                TkWord32 maxBound .                                         -- rname
-                TkWord32 maxBound .                                         -- pos
-                TkWord32 (0x12480000 .|. fromIntegral lqname) .             -- lqname, mapq, bin
-                TkWord32 (shiftL (flagsReadTwo .|. get_flag i) 16) .        -- n_cigar, flag
-                TkWord32 n_seq .                                            -- n_seq
-                TkWord32 maxBound .                                         -- mrnm
-                TkWord32 maxBound .                                         -- mpos
-                TkWord32 0 .                                                -- isize
-                qname .                                                     -- qname
-                TkBclSpecial (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i) .
-                TkBclSpecial (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i) .
-                indexRead "XIZ" "YIZ" cycles_index_one .
-                indexRead2 "XJZ" "YJZ" cycles_index_two revcom_index_two .
-                TkEndRecord
-      where
-        lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
-        qname  = TkString experiment . TkDecimal lane_number . TkDecimal tile_nbr .
-                 TkDecimal (fromIntegral px) . TkDecimal (fromIntegral py) . TkWord8 0
-
-        ilen x | x < 10 = 1
-               | x < 100 = 2
-               | x < 1000 = 3
-               | x < 10000 = 4
-               | x < 100000 = 5
-               | x < 1000000 = 6
-               | otherwise    = 7
-
-        indexRead  _  _   Nothing    = id
-        indexRead k1 k2 (Just (u,v)) =
-              TkString k1 . TkBclSpecial (BclArgs BclNucsAsc  tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0 .
-              TkString k2 . TkBclSpecial (BclArgs BclQualsAsc tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0
-
-        indexRead2  _  _   Nothing    _ = id
-        indexRead2 k1 k2 (Just (u,v)) False = indexRead k1 k2 (Just (u,v))
-        indexRead2 k1 k2 (Just (u,v)) True  =
-              TkString k1 . TkBclSpecial (BclArgs BclNucsAscRev  tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0 .
-              TkString k2 . TkBclSpecial (BclArgs BclQualsAscRev tile_bcls tile_stride (u-1) (v-1) i) . TkWord8 0
-
-    !n_seq = let Just (ra,re) = cycles_read_one in fromIntegral $ re-ra+1
-
-    !flagsSingle  = fromIntegral $ flagUnmapped
-    !flagsReadTwo = fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
-
-    !flagsReadOne = fromIntegral $ case cycles_read_two of
-            Just  _ -> flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
-            Nothing -> flagsSingle
-
-    get_flag j = fromIntegral $ case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
-
-    -- flagPaired       = 0x1
-    -- flagUnmapped     = 0x4
-    -- flagMateUnmapped = 0x8
-    -- flagFirstMate    = 0x40
-    -- flagSecondMate   = 0x80
-    -- flagFailsQC      = 0x200
-
-
--- This is a somewhat hairier replacement for tileToBam.  It saves us
--- something like 10..33% wall clock time globally... That's probably
--- worth the trouble.
-tileToBamBrute :: LaneDef -> Tile -> [ Endo BgzfTokens ]
-tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..} =
-    map go [0..V.length vlocs-1]
+-- | This is a somewhat hairier replacement for the original algorithm
+-- that produced proper 'BgzfTokens'.  It saves us something like
+-- 10..33% wall clock time globally... That's probably worth the
+-- trouble.  (If merging is enabled, it doesn't make a measurable
+-- difference, because merging is so much more expensive.)
+tileToBam :: MergeConf -> LaneDef -> Tile -> [ Endo BgzfTokens ]
+tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..}
+    = map go [0..V.length vlocs-1]
   where
     go i = Endo $ TkLowLevel minsize $ \bb ->
            withForeignPtr (buffer bb) $ \pp -> do
-           let Just (u,v) = cycles_read_one
-           rd1 <- do vv <- WM.unsafeNew (v-u+1)
-                     _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
-                                BclArgs BclNucsWide tile_bcls tile_stride (u-1) (v-1) i
-                     W.unsafeFreeze vv
-           qs1 <- do vv <- WM.unsafeNew (v-u+1)
-                     _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
-                                BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i
-                     W.unsafeFreeze vv
+           pz <- execStateT (go' i merge_conf) (pp `plusPtr` used bb)
+           if pz `minusPtr` pp - used bb <= minsize
+                then return bb { used = pz `minusPtr` pp }
+                else error "Oh noes, minsize was too optimistic!"
 
-           pz <- flip execStateT (pp `plusPtr` used bb) $ case cycles_read_two of
+    go' i (_, Nothing) = do
+           let Just (u,v) = cycles_read_one
+           one_read i Nothing flagsReadOne (u,v) 0
+           forM_ cycles_read_two $ \cs -> one_read i Nothing flagsReadTwo cs 0
+
+    go' i (low_qual, Just high_qual) = do
+           let Just (u,v) = cycles_read_one
+           rd1 <- lift $ do vv <- WM.unsafeNew (v-u+1)
+                            _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                       BclArgs BclNucsWide tile_bcls tile_stride (u-1) (v-1) i
+                            W.unsafeFreeze vv
+           qs1 <- lift $ do vv <- WM.unsafeNew (v-u+1)
+                            _  <- WM.unsafeWith vv $ \p -> loop_bcl_special (castPtr p) $
+                                       BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i
+                            W.unsafeFreeze vv
+
+           case cycles_read_two of
                 Nothing ->
                     case find_trim default_fwd_adapters rd1 qs1 of
                         (mlen, qual1, qual2)
-                            | u > v                       -> r1  0
-                            | mlen == 0 && qual1 >= highq -> return ()
-                            | qual1 < lowq                -> r1  0
-                            | qual1 >= highq              -> r1t 0
-                            | otherwise                   -> r1 eflagAlternative >> r1t eflagAlternative
+                            | u > v                            -> r1  0
+                            | mlen == 0 && qual1 >= high_qual  -> return ()
+                            | qual1 <  low_qual                -> r1  0
+                            | qual1 >= high_qual               -> r1t eflagTrimmed
+                            | otherwise -> r1 eflagAlternative >> r1t (eflagAlternative .|. eflagTrimmed)
                           where
-                            r1  = one_read flagsReadOne (u,v)
-                            r1t = one_read flagsReadOne (u,u+mlen-1)
+                            r1  = one_read i (Just (qual1, qual2)) flagsReadOne (u,v)
+                            r1t = one_read i (Just (qual1, qual2)) flagsReadOne (u,u+mlen-1)
 
                 Just (u',v') -> do
                     rd2 <- lift $ do vv <- WM.unsafeNew (v'-u'+1)
@@ -172,114 +94,105 @@ tileToBamBrute LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfil
                     case find_merge default_fwd_adapters default_rev_adapters rd1 qs1 rd2 qs2 of
                         (mlen, qual1, qual2)
                              | u > v && u' > v'                     -> r1 0 >> r2 0
-                             | qual1 < lowq                         -> r1 0 >> r2 0
-                             | qual1 >= highq && mlen == 0          -> return ()
-                             | qual1 >= highq                       -> rm 0
+                             | qual1 <  low_qual                    -> r1 0 >> r2 0
+                             | qual1 >= high_qual && mlen == 0      -> return ()
+                             | qual1 >= high_qual                   -> rm 0
                              | mlen < v-u-21 || mlen < v'-u'-21     -> rm 0
                              | otherwise -> r1 eflagAlternative >> r2 eflagAlternative >> rm eflagAlternative
 
                           where
-                            r1 = one_read flagsReadOne (u,v)
-                            r2 = one_read flagsReadTwo (u',v')
-                            rm = undefined -- XXX
+                            r1 = one_read i (Just (qual1, qual2)) flagsReadOne (u,v)
+                            r2 = one_read i (Just (qual1, qual2)) flagsReadTwo (u',v')
 
-           if pz `minusPtr` pp - used bb <= minsize
-                then return bb { used = pz `minusPtr` pp }
-                else error "Oh noes, minsize was too optimistic!"
-      where
-        w8 :: Word8 -> StateT (Ptr Word8) IO ()
-        w8 w = StateT $ \p -> ((),p `plusPtr` 1) <$ pokeByteOff p 0 w
+                            -- XXX  need to get the correct(!) sequence... from somewhere.
+                            rm ff = one_read i (Just (qual1, qual2)) flagsSingle (u,u+mlen-1) $
+                                        ff .|. eflagMerged .|. (if mlen < v-u+1 then eflagTrimmed else 0)
 
-        w32 :: Word32 -> StateT (Ptr Word8) IO ()
-        w32 w = StateT $ \p -> ((),p `plusPtr` 4) <$ pokeByteOff p 0 w
+    s8 :: B.ByteString -> StateT (Ptr Word8) IO ()
+    s8 s = StateT $ \p -> B.unsafeUseAsCString s $ \q ->
+                ((),p `plusPtr` B.length s) <$ copyBytes p (castPtr q) (B.length s)
 
-        wrap f a = StateT $ \p -> f p a >>= \l -> return ((), p `plusPtr` l)
+    w8 :: Word8 -> StateT (Ptr Word8) IO ()
+    w8 w = StateT $ \p -> ((),p `plusPtr` 1) <$ pokeByteOff p 0 w
 
-        one_read :: Word32 -> (Int,Int) -> Int -> StateT (Ptr Word8) IO ()
-        one_read flags (u,v) ff = do
-            p0 <- get
-            modify (`plusPtr` 4)
-            w32 maxBound                                                        -- rname
-            w32 maxBound                                                        -- pos
-            w32 (0x12480000 .|. fromIntegral lqname)                            -- lqname, mapq, bin
-            w32 (shiftL (flags .|. get_flag i) 16)                              -- n_cigar, flag
-            w32 (fromIntegral (v-u+1))                                          -- n_seq
-            w32 maxBound                                                        -- mrnm
-            w32 maxBound                                                        -- mpos
-            w32 0                                                               -- isize
+    w32 :: Word32 -> StateT (Ptr Word8) IO ()
+    w32 w = StateT $ \p -> ((),p `plusPtr` 4) <$ pokeByteOff p 0 w
 
-            let ln = B.length experiment
-            StateT $ \p -> B.unsafeUseAsCString experiment $ \q ->
-                ((),p `plusPtr` ln) <$ copyBytes p (castPtr q) ln
+    wrap :: (Ptr a -> t -> IO Int) -> t -> StateT (Ptr a) IO ()
+    wrap f a = StateT $ \p -> f p a >>= \l -> return ((), p `plusPtr` l)
 
-            wrap int_loop lane_number
-            wrap int_loop tile_nbr
-            wrap int_loop (fromIntegral px)
-            wrap int_loop (fromIntegral py)
-            w8 0
+    one_read :: Int -> Maybe (Int,Int) -> Word32 -> (Int,Int) -> Int -> StateT (Ptr Word8) IO ()
+    one_read i mmqs flags (u,v) ff = do
+        let (px,py) = vlocs V.! i
+        let lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
 
-            wrap loop_bcl_special (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
-            wrap loop_bcl_special (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
+        p0 <- get
+        modify (`plusPtr` 4)
+        w32 maxBound                                                        -- rname
+        w32 maxBound                                                        -- pos
+        w32 (0x12480000 .|. fromIntegral lqname)                            -- lqname, mapq, bin
+        w32 (shiftL (flags .|. get_flag i) 16)                              -- n_cigar, flag
+        w32 (fromIntegral (v-u+1))                                          -- n_seq
+        w32 maxBound                                                        -- mrnm
+        w32 maxBound                                                        -- mpos
+        w32 0                                                               -- isize
 
-            indexRead BclNucsAsc BclQualsAsc "XIZ" "YIZ" cycles_index_one
-            if revcom_index_two
-                  then indexRead BclNucsAscRev BclQualsAscRev "XJZ" "YJZ" cycles_index_two
-                  else indexRead BclNucsAsc    BclQualsAsc    "XJZ" "YJZ" cycles_index_two
+        s8 experiment                                                       -- rname, many pieces
+        wrap int_loop lane_number
+        wrap int_loop tile_nbr
+        wrap int_loop (fromIntegral px)
+        wrap int_loop (fromIntegral py)
+        w8 0
 
-            when (ff /= 0) $ do w8 (c2w 'F')
-                                w8 (c2w 'F')
-                                w8 (c2w 'C')
-                                w8 (fromIntegral ff)
-            StateT $ \pe ->
-                ((),pe) <$ pokeByteOff p0 0 (fromIntegral $ (pe `minusPtr` p0) - 4 :: Word32)
+        wrap loop_bcl_special (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
+        wrap loop_bcl_special (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
 
+        indexRead i BclNucsAsc BclQualsAsc "XIZ" "YIZ" cycles_index_one
+        if revcom_index_two
+              then indexRead i BclNucsAscRev BclQualsAscRev "XJZ" "YJZ" cycles_index_two
+              else indexRead i BclNucsAsc    BclQualsAsc    "XJZ" "YJZ" cycles_index_two
 
-        (px,py) = vlocs V.! i
-        lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
+        when (ff /= 0) $ s8 "FFC" >> w8 (fromIntegral ff)
 
-        ilen x | x < 10 = 1
-               | x < 100 = 2
-               | x < 1000 = 3
-               | x < 10000 = 4
-               | x < 100000 = 5
-               | x < 1000000 = 6
-               | otherwise    = 7
-
-        indexRead :: BclSpecialType -> BclSpecialType -> Bytes -> Bytes -> Maybe (Int,Int) -> StateT (Ptr Word8) IO ()
-        indexRead  _   _   _  _   Nothing    = StateT $ \p' -> return ((),p')
-        indexRead tp1 tp2 k1 k2 (Just (u,v)) = StateT $ \p' -> do
-            B.unsafeUseAsCString k1 $ \q -> copyBytes p' (castPtr q) (B.length k1)
-            l1 <- loop_bcl_special (p' `plusPtr` B.length k1) (BclArgs  tp1 tile_bcls tile_stride (u-1) (v-1) i)
-            let pp1 = p' `plusPtr` (B.length k1 + l1 + 1)
-            pokeByteOff pp1 (-1) (0 :: Word8)
-
-            B.unsafeUseAsCString k2 $ \q -> copyBytes pp1 (castPtr q) (B.length k2)
-            l2 <- loop_bcl_special (pp1 `plusPtr` B.length k2) (BclArgs tp2 tile_bcls tile_stride (u-1) (v-1) i)
-            let pp2 = pp1 `plusPtr` (B.length k2 + l2 + 1)
-            pokeByteOff pp2 (-1) (0 :: Word8)
-            return ((),pp2)
+        forM_ mmqs $ \(ym,yn) -> do s8 "YMC" >> w8 (fromIntegral (min 255 ym))
+                                    s8 "YNC" >> w8 (fromIntegral (min 255 yn))
+        StateT $ \pe ->
+            ((),pe) <$ pokeByteOff p0 0 (fromIntegral $ (pe `minusPtr` p0) - 4 :: Word32)
 
 
-    !minsize = 2 * length tile_cycles + 2 * B.length experiment + 256
+    ilen x | x < 10 = 1
+           | x < 100 = 2
+           | x < 1000 = 3
+           | x < 10000 = 4
+           | x < 100000 = 5
+           | x < 1000000 = 6
+           | otherwise    = 7
+
+    indexRead :: Int -> BclSpecialType -> BclSpecialType -> Bytes -> Bytes -> Maybe (Int,Int) -> StateT (Ptr Word8) IO ()
+    indexRead _  _   _   _  _   Nothing    = StateT $ \p' -> return ((),p')
+    indexRead i tp1 tp2 k1 k2 (Just (u,v)) = StateT $ \p' -> do
+        B.unsafeUseAsCString k1 $ \q -> copyBytes p' (castPtr q) (B.length k1)
+        l1 <- loop_bcl_special (p' `plusPtr` B.length k1) (BclArgs  tp1 tile_bcls tile_stride (u-1) (v-1) i)
+        let pp1 = p' `plusPtr` (B.length k1 + l1 + 1)
+        pokeByteOff pp1 (-1) (0 :: Word8)
+
+        B.unsafeUseAsCString k2 $ \q -> copyBytes pp1 (castPtr q) (B.length k2)
+        l2 <- loop_bcl_special (pp1 `plusPtr` B.length k2) (BclArgs tp2 tile_bcls tile_stride (u-1) (v-1) i)
+        let pp2 = pp1 `plusPtr` (B.length k2 + l2 + 1)
+        pokeByteOff pp2 (-1) (0 :: Word8)
+        return ((),pp2)
+
+
+    !minsize = 4 * length tile_cycles + 3 * B.length experiment + 512
 
     !flagsSingle  = fromIntegral $ flagUnmapped
     !flagsReadTwo = fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
-    !flagsReadOne = fromIntegral $ case cycles_read_two of
-            Just  _ -> flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
+    !flagsReadOne = case cycles_read_two of
+            Just  _ -> fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
             Nothing -> flagsSingle
 
     get_flag j = fromIntegral $ case vfilt V.!? j of Just x | odd x -> flagFailsQC ; _ -> 0
-
-    -- flagPaired       = 0x1
-    -- flagUnmapped     = 0x4
-    -- flagMateUnmapped = 0x8
-    -- flagFirstMate    = 0x40
-    -- flagSecondMate   = 0x80
-    -- flagFailsQC      = 0x200
-
-    lowq  =  20 -- XXX
-    highq = 200 -- XXX
 
 
 -- | Definition of a lane to be processed.  Includes paths, read
@@ -331,18 +244,20 @@ unknown_revcom_status :: Bool
 unknown_revcom_status = error "can't tell if index two is reverse-complemented"
 
 data Cfg = Cfg
-        { cfg_output :: (Handle -> IO ()) -> IO ()
-        , cfg_report :: String -> IO ()
+        { cfg_output    :: (Handle -> IO ()) -> IO ()
+        , cfg_report    :: String -> IO ()
         -- | only used when no run folder is speficied
-        , cfg_lanes :: [Int]
+        , cfg_lanes     :: [Int]
         -- | applied to the LaneDefs derived from a RunInfo.xml
-        , cfg_overrides :: [LaneDef] -> [LaneDef] }
+        , cfg_overrides :: [LaneDef] -> [LaneDef]
+        , cfg_merge     :: MergeConf }
 
 default_cfg :: Cfg
 default_cfg = Cfg { cfg_output    = \k -> k stdout
                   , cfg_report    = const $ return ()
                   , cfg_lanes     = [1]
-                  , cfg_overrides = id }
+                  , cfg_overrides = id
+                  , cfg_merge     = (20, Nothing) }
 
 options :: [OptDescr (Cfg -> IO Cfg)]
 options = [
@@ -356,6 +271,8 @@ options = [
     Option "R" ["read2"]                (ReqArg set_read2    "RANGE") "Read 2 comprises cycles in RANGE",
     Option "i" ["index1"]               (ReqArg set_index1   "RANGE") "Index 1 comprises cycles in RANGE",
     Option "I" ["index2"]               (ReqArg set_index2   "RANGE") "Index 2 comprises cycles in RANGE",
+    Option "m" ["merge-overlap"]        (OptArg set_merge     "QUAL") "Attempt to merge or trim reads",
+    Option "q" ["merge-qual"]           (ReqArg set_qual      "QUAL") "Minimum quality for merge is QUAL",
     Option [ ] ["mpi-protocol"]         (NoArg         set_norevcom2) "Do not reverse-complement index read two",
     Option [ ] ["nextera-protocol"]     (NoArg           set_revcom2) "Reverse-complement index read two",
     Option "v" ["verbose"]              (NoArg           set_verbose) "Enable progress reporting",
@@ -375,6 +292,10 @@ options = [
 
     set_revcom2     = override . map $ \l -> l { revcom_index_two =  True }
     set_norevcom2   = override . map $ \l -> l { revcom_index_two = False }
+
+    set_merge Nothing  c =                    return $ c { cfg_merge = ( fst (cfg_merge c), Just 200 ) }
+    set_merge (Just a) c = readIO a >>= \m -> return $ c { cfg_merge = ( fst (cfg_merge c), Just m ) }
+    set_qual        a  c = readIO a >>= \q -> return $ c { cfg_merge = ( q, snd (cfg_merge c) ) }
 
     set_output  a c = return $ c { cfg_output = \k -> withFile (a++"#") WriteMode k >> renameFile (a++"#") a }
     set_verbose   c = return $ c { cfg_report = hPutStrLn stderr }
@@ -489,12 +410,11 @@ listCycles bcls = mapMaybe get_cycle <$> getDirectoryContents bcls
 
 
 -- For each tile, read locs and all the bcls.  Run tileToBam and emit.
-bamFromBcl :: (String -> IO ()) -> LaneDef -> Enumerator (Endo BgzfTokens) IO b
-bamFromBcl report ld@LaneDef{..} it0 =
+bamFromBcl :: (String -> IO ()) -> MergeConf -> LaneDef -> Enumerator (Endo BgzfTokens) IO b
+bamFromBcl report merge_conf ld@LaneDef{..} it0 =
     foldM (\it fn -> do report fn
                         tile <- readTile fn path_locs path_bcl [1..ce]
-                        -- enumPure1Chunk (tileToBam ld tile) it
-                        enumPure1Chunk (fold $ tileToBamBrute ld tile) it
+                        enumPure1Chunk (fold $ tileToBam merge_conf ld tile) it
           ) it0 (maybe [] id tiles)
   where
     !ce = maybe id (max . snd) cycles_index_two $
@@ -527,7 +447,7 @@ main = do
 
     cfg_output $ \hdl ->
         (\o -> encodeHeader >>= flip enumPure1Chunk o) >=>
-        foldr ((>=>) . bamFromBcl cfg_report) run lanedefs $
+        foldr ((>=>) . bamFromBcl cfg_report cfg_merge) run lanedefs $
             joinI $ encodeBgzf 6 $ mapChunksM_ (B.hPut hdl)
 
 
