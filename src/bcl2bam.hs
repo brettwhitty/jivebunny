@@ -104,9 +104,13 @@ tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Fil
                             r1 = one_read i (Just (qual1, qual2)) flagsReadOne (u,v)
                             r2 = one_read i (Just (qual1, qual2)) flagsReadTwo (u',v')
 
-                            -- XXX  need to get the correct(!) sequence... from somewhere.
-                            rm ff = one_read i (Just (qual1, qual2)) flagsSingle (u,u+mlen-1) $
+                            rm ff = one_read_with merge_core i (Just (qual1, qual2)) flagsSingle (u,u+mlen-1) $
                                         ff .|. eflagMerged .|. (if mlen < v-u+1 then eflagTrimmed else 0)
+
+                            merge_core _ _ _ = do
+                                let qmax = fromIntegral $ min 63 qual1
+                                V.imapM_  n4        $ merged_seq       mlen rd1 qs1 rd2 qs2
+                                V.mapM_  (w8 . unQ) $ merged_qual qmax mlen rd1 qs1 rd2 qs2
 
     s8 :: B.ByteString -> StateT (Ptr Word8) IO ()
     s8 s = StateT $ \p -> B.unsafeUseAsCString s $ \q ->
@@ -115,6 +119,12 @@ tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Fil
     w8 :: Word8 -> StateT (Ptr Word8) IO ()
     w8 w = StateT $ \p -> ((),p `plusPtr` 1) <$ pokeByteOff p 0 w
 
+    n4 :: Int -> Nucleotides -> StateT (Ptr Word8) IO ()
+    n4 i (Ns n) | even i    = StateT $ \p -> ((),p) <$ pokeByteOff p 0 (shiftL n 4)
+                | otherwise = StateT $ \p -> do a <- peekByteOff p 0
+                                                pokeByteOff p 0 (a .|. n)
+                                                return ((),p `plusPtr` 1)
+
     w32 :: Word32 -> StateT (Ptr Word8) IO ()
     w32 w = StateT $ \p -> ((),p `plusPtr` 4) <$ pokeByteOff p 0 w
 
@@ -122,7 +132,11 @@ tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Fil
     wrap f a = StateT $ \p -> f p a >>= \l -> return ((), p `plusPtr` l)
 
     one_read :: Int -> Maybe (Int,Int) -> Word32 -> (Int,Int) -> Int -> StateT (Ptr Word8) IO ()
-    one_read i mmqs flags (u,v) ff = do
+    one_read = one_read_with $ \i u v -> do
+        wrap loop_bcl_special (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
+        wrap loop_bcl_special (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
+
+    one_read_with core i mmqs flags (u,v) ff = do
         let (px,py) = vlocs V.! i
         let lqname = B.length experiment + 5 + ilen lane_number + ilen tile_nbr + ilen px + ilen py
 
@@ -144,8 +158,7 @@ tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Fil
         wrap int_loop (fromIntegral py)
         w8 0
 
-        wrap loop_bcl_special (BclArgs BclNucsBin  tile_bcls tile_stride (u-1) (v-1) i)
-        wrap loop_bcl_special (BclArgs BclQualsBin tile_bcls tile_stride (u-1) (v-1) i)
+        _ <- core i u v
 
         indexRead i BclNucsAsc BclQualsAsc "XIZ" "YIZ" cycles_index_one
         if revcom_index_two
@@ -183,12 +196,12 @@ tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Fil
         return ((),pp2)
 
 
-    !minsize = 4 * length tile_cycles + 3 * B.length experiment + 512
+    minsize = 4 * length tile_cycles + 3 * B.length experiment + 512
 
-    !flagsSingle  = fromIntegral $ flagUnmapped
-    !flagsReadTwo = fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
+    flagsSingle  = fromIntegral $ flagUnmapped
+    flagsReadTwo = fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
-    !flagsReadOne = case cycles_read_two of
+    flagsReadOne = case cycles_read_two of
             Just  _ -> fromIntegral $ flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
             Nothing -> flagsSingle
 
