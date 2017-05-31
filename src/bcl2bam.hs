@@ -120,10 +120,10 @@ tileToBam merge_conf LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Fil
     w8 w = StateT $ \p -> ((),p `plusPtr` 1) <$ pokeByteOff p 0 w
 
     n4 :: Int -> Nucleotides -> StateT (Ptr Word8) IO ()
-    n4 i (Ns n) | even i    = StateT $ \p -> ((),p) <$ pokeByteOff p 0 (shiftL n 4)
-                | otherwise = StateT $ \p -> do a <- peekByteOff p 0
-                                                pokeByteOff p 0 (a .|. n)
-                                                return ((),p `plusPtr` 1)
+    n4 i (Ns n) | even i    = StateT $ \p -> ((),plusPtr p 1) <$ pokeByteOff p 0 (shiftL n 4)
+                | otherwise = StateT $ \p -> do a <- peekByteOff p (-1)
+                                                pokeByteOff p (-1) (a .|. n)
+                                                return ((),p)
 
     w32 :: Word32 -> StateT (Ptr Word8) IO ()
     w32 w = StateT $ \p -> ((),p `plusPtr` 4) <$ pokeByteOff p 0 w
