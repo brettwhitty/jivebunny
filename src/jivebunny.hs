@@ -144,7 +144,7 @@ data RG = RG { rgid :: B.ByteString
 -- to come by.
 
 readRGdefns :: HM.HashMap T.Text Int -> HM.HashMap T.Text Int -> T.Text -> [ RG ]
-readRGdefns p7is p5is = map repack . filter (not . null) . map (T.split (=='\t'))
+readRGdefns p7is p5is = map repack . filter (not . null) . map T.words
                       . dropWhile ("#" `T.isPrefixOf`) . T.lines
   where
     repack (rg:_) | T.any (\c -> c == '/' || c == ',') rg = error $ "RG name must not contain ',' or '/': " ++ show rg

@@ -1,5 +1,5 @@
 name:                jivebunny
-version:             0.2
+version:             0.2.1
 synopsis:            demultiplexer for Illumina sequencing data
 homepage:            https://bitbucket.org/ustenzel/jivebunny
 license:             GPL-3
