@@ -26,36 +26,36 @@ executable jivebunny
   default-language:    Haskell2010
   default-extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, TypeFamilies, RecordWildCards
-  other-modules:       Index
-  build-depends:       aeson                    >= 0.7 && < 1.1,
-                       base                     >= 4.6 && < 4.10,
+  other-modules:       Index, Paths_jivebunny
+  build-depends:       aeson                    >= 0.7 && < 1.3,
+                       base                     >= 4.6 && < 4.11,
                        biohazard                >= 0.6.15 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        random                   >= 1.0 && < 1.2,
-                       text                     >= 1.0 && < 2.0,
+                       text                     >= 1.0 && < 1.3,
                        unordered-containers     >= 0.2.3 && < 0.3,
                        vector                   >= 0.11 && < 0.13,
-                       vector-algorithms        >= 0.3 && < 1.0,
+                       vector-algorithms        >= 0.3 && < 0.8,
                        vector-th-unbox          == 0.2.*
 
 executable bcl2bam
   main-is:             bcl2bam.hs
   build-depends:       async                    >= 2.0 && < 2.2,
-                       base                     >= 4.6 && < 4.10,
+                       base                     >= 4.6 && < 4.11,
                        biohazard                >= 0.6.15 && < 0.7,
                        bytestring               >= 0.10.2 && < 0.11,
                        containers               >= 0.4.1 && < 0.6,
-                       directory                >= 1.2 && < 2.0,
-                       filepath                 >= 1.3 && < 2.0,
-                       stm                      >= 2.4 && < 3.0,
-                       transformers,
+                       directory                >= 1.2 && < 1.4,
+                       filepath                 >= 1.3 && < 1.5,
+                       stm                      == 2.4.*,
+                       transformers             >= 0.4.1 && < 0.6,
                        vector                   >= 0.11 && < 0.13,
                        xml                      == 1.3.*,
-                       zlib                     >= 0.5 && < 0.7
+                       zlib                     == 0.6.*
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N2
   default-extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards,
                        ForeignFunctionInterface, PatternGuards
-  other-modules:       BCL, Locs
+  other-modules:       BCL, Locs, Paths_jivebunny
