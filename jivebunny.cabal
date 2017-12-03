@@ -9,10 +9,11 @@ maintainer:          udo.stenzel@eva.mpg.de
 build-type:          Simple
 extra-source-files:  ChangeLog.md
                      man/man1/bcl2bam.1
-                     man/man1/fastq2bam.1
+                     man/man1/jivebunny.1
 cabal-version:       >=1.10
 data-files:          index_db.json
 data-dir:            data
+tested-with:         GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.2, GHC == 8.2.1
 
 executable jivebunny
   main-is:             jivebunny.hs
