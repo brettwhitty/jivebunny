@@ -6,10 +6,9 @@ sequencing runs.  It is intended to both detect and remove contamination
 with unexpected libraries, and to demultiplex while providing an easy to
 understand quality measure.
 
-This is work-in-progress.  For the time being, we have `jivebunny`,
-which operates on BAM files (and is a bit slow), and `bcl2bam`, which
-converts BCL to BAM.  Eventually, both functions will be merged into one
-tool.
+For the time being, we have `jivebunny`, which operates on BAM files
+(and is a bit slow), and `bcl2bam`, which converts BCL to BAM.  Ideally,
+both functions should be merged into one tool.
 
 
 Installation
@@ -21,11 +20,9 @@ from Hackage.  To install, follow these steps:
 
 * install GHC (see http://haskell.org/ghc) and Cabal (see
    http://haskell.org/cabal),
-* run `cabal update` (takes a while to download the current package list),
-* run `cabal install
-  https://bitbucket.org/ustenzel/biohazard/get/master.tar.gz
-  https://bitbucket.org/ustenzel/jivebunny/get/master.tar.gz`
-  (takes even longer).
+* `cabal update` (takes a while to download the current package list),
+* `git clone https://ustenzel@bitbucket.org/ustenzel/jivebunny.git`
+* `cabal install jivebunny/`
 
 When done, on an unmodified Cabal setup, you will find the binaries in 
 `${HOME}/cabal/bin`.  Cabal can install them in a different place, please 
