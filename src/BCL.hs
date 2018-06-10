@@ -29,8 +29,8 @@ import Data.Vector.Generic              ( unstream )
 import Foreign.C.Types                  ( CSize(..) )
 import Foreign.Ptr                      ( Ptr, plusPtr, castPtr )
 import Foreign.Marshal.Utils            ( copyBytes )
-import System.Directory
-import System.FilePath
+import System.Directory                 ( doesFileExist )
+import System.FilePath                  ( (<.>), (</>), takeBaseName )
 
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Lazy               as L

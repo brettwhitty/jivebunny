@@ -16,14 +16,14 @@ import Bio.Iteratee
 import Bio.Iteratee.Builder
 import Bio.Prelude
 import Control.Exception                   ( IOException )
-import Control.Monad.Trans.State.Strict
+import Control.Monad.Trans.State.Strict    ( StateT(..), execStateT, get, modify )
 import Foreign.Marshal.Utils               ( copyBytes )
 import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
-import System.Directory
-import System.FilePath
+import System.Directory                    ( getDirectoryContents, doesDirectoryExist, renameFile )
+import System.FilePath                     ( (</>), dropExtension, takeExtension, takeBaseName, dropTrailingPathSeparator )
 import System.IO                           ( hPutStrLn, stderr, stdout, withFile, IOMode(..) )
-import Text.XML.Light               hiding ( Text )
+import Text.XML.Light                      ( Element, parseXMLDoc, unqual, findElements, findChildren, findAttr )
 
 import qualified Data.ByteString              as B
 import qualified Data.ByteString.Unsafe       as B ( unsafeUseAsCString )

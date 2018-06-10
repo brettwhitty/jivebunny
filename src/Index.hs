@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies, MultiParamTypeClasses, CPP    #-}
+{-# LANGUAGE TypeFamilies, MultiParamTypeClasses         #-}
 module Index where
 
 -- ^ This tiny module defines the 'Index' type and derives the 'Unbox'
@@ -7,12 +7,7 @@ module Index where
 -- runs into problems :(
 
 import Bio.Prelude
-import Data.Vector.Unboxed.Deriving
-
-#if __GLASGOW_HASKELL__ == 704
-import Data.Vector.Generic          ( Vector(..) )
-import Data.Vector.Generic.Mutable  ( MVector(..) )
-#endif
+import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 
 -- | An index sequence must have at most eight bases.  We represent a
 -- base and its quality score in a single byte:  the top three bits are

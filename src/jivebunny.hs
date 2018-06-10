@@ -22,9 +22,9 @@
 import Bio.Bam
 import Bio.Prelude
 import Bio.Util.Numeric                 ( showNum )
-import Data.Aeson
-import Foreign.C.Types
-import Foreign.Marshal.Alloc
+import Data.Aeson                       ( FromJSON(..), withObject, withText, decodeStrict', (.:) )
+import Foreign.C.Types                  ( CUInt(..) )
+import Foreign.Marshal.Alloc            ( alloca )
 import Paths_jivebunny                  ( version, getDataFileName )
 import System.Console.GetOpt
 import System.Random                    ( randomRIO )
