@@ -15,14 +15,13 @@ import Bio.Bam.Trim
 import Bio.Iteratee
 import Bio.Iteratee.Builder
 import Bio.Prelude
-import Control.Exception                   ( IOException )
 import Control.Monad.Trans.State.Strict    ( StateT(..), execStateT, get, modify )
 import Foreign.Marshal.Utils               ( copyBytes )
 import Paths_jivebunny                     ( version )
 import System.Console.GetOpt
 import System.Directory                    ( getDirectoryContents, doesDirectoryExist, renameFile )
 import System.FilePath                     ( (</>), dropExtension, takeExtension, takeBaseName, dropTrailingPathSeparator )
-import System.IO                           ( hPutStrLn, stderr, stdout, withFile, IOMode(..) )
+import System.IO                           ( withFile, IOMode(..) )
 import Text.XML.Light                      ( Element, parseXMLDoc, unqual, findElements, findChildren, findAttr )
 
 import qualified Data.ByteString              as B

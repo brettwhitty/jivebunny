@@ -18,8 +18,9 @@ Installation
 Haskell.  It depends on the `biohazard` library and additional stuff
 from Hackage.  To install, follow these steps:
 
-* install GHC (see http://haskell.org/ghc) and Cabal (see
-   http://haskell.org/cabal),
+* install GHC (see http://haskell.org/ghc, version 8.4.4 is recommended)
+  and cabal-install (see http://haskell.org/cabal, version 2.4.0.0 is
+  recommended),
 * `cabal update` (takes a while to download the current package list),
 * `git clone https://ustenzel@bitbucket.org/ustenzel/jivebunny.git`
 * `cabal install jivebunny/`

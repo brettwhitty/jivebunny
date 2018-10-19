@@ -18,8 +18,6 @@ import Data.Vector.Generic                  ( unstream )
 import Foreign.C.Types                      ( CChar, CDouble(..) )
 import Foreign.Marshal.Alloc                ( alloca )
 import Foreign.Marshal.Utils                ( copyBytes )
-import Foreign.Ptr                          ( plusPtr, Ptr )
-import Foreign.Storable                     ( peek )
 
 import qualified Data.ByteString                 as B
 import qualified Data.ByteString.Unsafe          as B
